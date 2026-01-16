@@ -9,7 +9,7 @@ const Branch = require('../models/Branch');
 const User = require('../models/User');
 const { AppError } = require('../middleware/errorHandler');
 const { generateCommitHash } = require('../utils/commitHash');
-const { saveFile, saveCurrentSnapshot } = require('../services/storage/fileStorage');
+const { saveFile, saveCurrentSnapshot, getCommitSnapshot } = require('../services/storage/fileStorage');
 const { emitBranchUpdated } = require('../services/websocket/websocketService');
 const multer = require('multer');
 
@@ -157,6 +157,112 @@ const createCommit = async (req, res, next) => {
   }
 };
 
+/**
+ * Revert branch to a specific commit
+ */
+const revertToCommit = async (req, res, next) => {
+  try {
+    const { projectId, branchId, commitHash } = req.params;
+    const userId = req.userId;
+
+    console.log('Revert to commit request:', { projectId, branchId, commitHash });
+
+    // Get branch - branchId can be string or ObjectId
+    const branch = await Branch.findById(branchId);
+    if (!branch || branch.projectId !== projectId) {
+      throw new AppError('NOT_FOUND', 'Branch not found', 404);
+    }
+
+    // Get commit
+    const commit = await Commit.findOne({
+      projectId,
+      branchId,
+      hash: commitHash,
+    });
+
+    if (!commit) {
+      throw new AppError('NOT_FOUND', 'Commit not found', 404);
+    }
+
+    // Get commit snapshot
+    let commitSnapshot;
+    try {
+      commitSnapshot = await getCommitSnapshot(projectId, branchId, commitHash);
+    } catch (error) {
+      throw new AppError('NOT_FOUND', 'Commit snapshot file not found', 404);
+    }
+
+    // Replace current branch snapshot with commit snapshot
+    await saveCurrentSnapshot(commitSnapshot, projectId, branchId);
+
+    // Create revert commit (soft rollback - preserves history)
+    const parentHash = branch.lastCommit?.hash || null;
+    const revertMessage = `Reverted to commit ${commitHash.substring(0, 7)}: ${commit.message}`;
+    const revertCommitHash = generateCommitHash(
+      projectId,
+      branchId,
+      revertMessage,
+      userId,
+      parentHash
+    );
+
+    // Save revert commit snapshot file
+    const revertCommitFilePath = await saveFile(
+      commitSnapshot,
+      projectId,
+      branchId,
+      revertCommitHash,
+      'json'
+    );
+
+    // Count elements for commit metadata
+    const commitData = JSON.parse(commitSnapshot.toString());
+    const elementCount = commitData?.pages?.[0]?.artboards?.[0]?.elements?.length || 0;
+
+    // Create revert commit record
+    const revertCommit = await Commit.create({
+      projectId,
+      branchId,
+      hash: revertCommitHash,
+      message: revertMessage,
+      authorId: userId,
+      parentCommitHash: parentHash,
+      changes: {
+        filesAdded: 0,
+        filesModified: 1,
+        filesDeleted: 0,
+        componentsUpdated: elementCount,
+      },
+      snapshot: {
+        fileUrl: revertCommitFilePath,
+        thumbnailUrl: null,
+      },
+    });
+
+    // Update branch last commit
+    branch.lastCommit = {
+      hash: revertCommit.hash,
+      message: revertCommit.message,
+      timestamp: revertCommit.timestamp,
+      authorId: revertCommit.authorId,
+    };
+    branch.updatedAt = new Date();
+    await branch.save();
+
+    // Emit WebSocket event
+    emitBranchUpdated(projectId, branch);
+
+    res.json({
+      success: true,
+      message: 'Branch reverted successfully',
+      commit: revertCommit,
+      revertedToCommit: commit,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // Export multer middleware for use in routes
 const uploadMiddleware = upload.single('snapshot');
 
@@ -164,4 +270,5 @@ module.exports = {
   getHistory,
   createCommit,
   uploadMiddleware,
+  revertToCommit,
 };
