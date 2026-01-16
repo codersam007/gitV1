@@ -53,7 +53,7 @@ const createProject = async (req, res, next) => {
       settings: {
         branchProtection: {
           requireApproval: true,
-          minReviews: 2,
+          minReviews: 1,
           autoDeleteMerged: false,
         },
         notifications: {
@@ -90,7 +90,7 @@ const createProject = async (req, res, next) => {
       projectId,
       userId,
       email: userEmail,
-      role: 'owner',
+      role: 'manager', // Project creator becomes manager
       status: 'active',
       joinedAt: new Date(),
     });

@@ -15,7 +15,7 @@ const {
   completeMerge,
 } = require('../controllers/mergeRequestController');
 const { authenticate } = require('../middleware/auth');
-const { checkProjectAccess, checkReviewer } = require('../middleware/authorization');
+const { checkProjectAccess, checkReviewer, checkManager } = require('../middleware/authorization');
 const { validateCreateMergeRequest } = require('../utils/validators');
 
 // GET /api/v1/merge-requests?projectId=:projectId&status=:status - Get merge requests
@@ -32,7 +32,10 @@ router.get('/:mergeRequestId', authenticate, (req, res, next) => {
 
 // POST /api/v1/merge-requests - Create merge request
 router.post('/', authenticate, (req, res, next) => {
-  req.params.projectId = req.body.projectId;
+  // Extract projectId from body and add to params for middleware
+  if (req.body.projectId) {
+    req.params.projectId = req.body.projectId;
+  }
   next();
 }, checkProjectAccess, validateCreateMergeRequest, createMergeRequest);
 
@@ -49,9 +52,10 @@ router.post('/:mergeRequestId/request-changes', authenticate, (req, res, next) =
 }, checkProjectAccess, checkReviewer, requestChanges);
 
 // POST /api/v1/merge-requests/:mergeRequestId/merge - Complete merge
+// Only managers can complete merge (designers can only approve)
 router.post('/:mergeRequestId/merge', authenticate, (req, res, next) => {
   req.params.projectId = req.query.projectId;
   next();
-}, checkProjectAccess, completeMerge);
+}, checkProjectAccess, checkManager, completeMerge);
 
 module.exports = router;

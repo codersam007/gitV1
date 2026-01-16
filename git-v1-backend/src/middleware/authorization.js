@@ -76,25 +76,26 @@ const checkRole = (allowedRoles) => {
 };
 
 /**
- * Check if user is project owner
+ * Check if user is manager (has full control)
  */
-const checkOwner = checkRole(['owner']);
+const checkManager = checkRole(['manager']);
 
 /**
- * Check if user is owner or admin
+ * Check if user is manager (for actions requiring full control)
+ * Alias for checkManager for backward compatibility
  */
-const checkOwnerOrAdmin = checkRole(['owner', 'admin']);
+const checkOwnerOrAdmin = checkRole(['manager']);
 
 /**
  * Check if user can review merge requests
- * Typically designers and above can review
+ * Both managers and designers can review
  */
-const checkReviewer = checkRole(['owner', 'admin', 'designer']);
+const checkReviewer = checkRole(['manager', 'designer']);
 
 module.exports = {
   checkProjectAccess,
   checkRole,
-  checkOwner,
-  checkOwnerOrAdmin,
+  checkManager,
+  checkOwnerOrAdmin, // Alias for checkManager (backward compatibility)
   checkReviewer,
 };
