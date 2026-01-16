@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Design Branch Manager - Version control for Adobe Express designs" />
+    <meta name="keywords" content="Adobe, Express, Add-On, Design, Version Control, Branch Manager" />
+    <title>Design Branch Manager</title>
+    <style>
+        /* ============================================
+           CSS VARIABLES - Design System Colors
+           ============================================ */
+        :root {
+            --color-primary: #1473E6;
+            --color-primary-hover: #0D66D0;
+            --color-success: #107C10;
+            --color-warning: #FF8C00;
+            --color-danger: #E81123;
+            --color-bg: #F5F5F5;
+            --color-surface: #FFFFFF;
+            --color-text: #202122;
+            --color-text-secondary: #6F6F6F;
+            --color-border: #D0D0D0;
+            --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        /* ============================================
+           RESET & BASE STYLES
+           ============================================ */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            font-family: var(--font-family);
+            background: var(--color-bg);
+            color: var(--color-text);
+        }
+
+        body {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* ============================================
+           HEADER COMPONENT
+           ============================================ */
+        .header {
+            background: var(--color-surface);
+            border-bottom: 1px solid var(--color-border);
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .logo {
+            width: 24px;
+            height: 24px;
+            background: var(--color-primary);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        /* ============================================
+           TAB NAVIGATION
+           ============================================ */
+        .tabs {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid var(--color-border);
+            background: var(--color-surface);
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px;
+            text-align: center;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--color-text-secondary);
+            transition: all 200ms ease;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -1px;
+        }
+
+        .tab.active {
+            color: var(--color-primary);
+            border-bottom-color: var(--color-primary);
+        }
+
+        .tab:hover {
+            background: var(--color-bg);
+        }
+
+        /* ============================================
+           CONTENT AREA
+           ============================================ */
+        .content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .section {
+            display: none;
+        }
+
+        .section.active {
+            display: block;
+        }
+
+        /* ============================================
+           CARD COMPONENTS
+           ============================================ */
+        .card {
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 12px;
+            transition: all 200ms ease;
+        }
+
+        .card:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        /* ============================================
+           BADGE COMPONENTS
+           ============================================ */
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge-success {
+            background: rgba(16, 124, 16, 0.15);
+            color: var(--color-success);
+        }
+
+        .badge-warning {
+            background: rgba(255, 140, 0, 0.15);
+            color: var(--color-warning);
+        }
+
+        .badge-danger {
+            background: rgba(232, 17, 35, 0.15);
+            color: var(--color-danger);
+        }
+
+        .badge-info {
+            background: rgba(20, 115, 230, 0.15);
+            color: var(--color-primary);
+        }
+
+        /* ============================================
+           FORM ELEMENTS
+           ============================================ */
+        .input-group {
+            margin-bottom: 16px;
+        }
+
+        .label {
+            display: block;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            text-transform: uppercase;
+            color: var(--color-text-secondary);
+        }
+
+        input[type="text"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid var(--color-border);
+            border-radius: 4px;
+            font-family: var(--font-family);
+            font-size: 13px;
+            transition: border-color 200ms ease;
+        }
+
+        input[type="text"]:focus,
+        textarea:focus,
+        select:focus {
+            outline: none;
+            border-color: var(--color-primary);
+            box-shadow: 0 0 0 3px rgba(20, 115, 230, 0.1);
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        /* ============================================
+           BUTTON COMPONENTS
+           ============================================ */
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 200ms ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: var(--color-primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--color-primary-hover);
+        }
+
+        .btn-secondary {
+            background: var(--color-bg);
+            color: var(--color-text);
+            border: 1px solid var(--color-border);
+        }
+
+        .btn-secondary:hover {
+            background: #EEEEEE;
+        }
+
+        .btn-sm {
+            padding: 4px 12px;
+            font-size: 12px;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        /* ============================================
+           BRANCH LIST COMPONENTS
+           ============================================ */
+        .branch-list {
+            display: grid;
+            gap: 12px;
+        }
+
+        .branch-item {
+            padding: 12px;
+            background: var(--color-surface);
+            border: 1px solid var(--color-border);
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            transition: all 200ms ease;
+        }
+
+        .branch-item:hover {
+            border-color: var(--color-primary);
+            background: rgba(20, 115, 230, 0.02);
+        }
+
+        .branch-info {
+            flex: 1;
+        }
+
+        .branch-name {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .branch-meta {
+            font-size: 12px;
+            color: var(--color-text-secondary);
+        }
+
+        .branch-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        /* ============================================
+           HISTORY COMPONENTS
+           ============================================ */
+        .history-item {
+            padding: 12px;
+            border-left: 3px solid var(--color-border);
+            margin-bottom: 8px;
+            transition: all 200ms ease;
+        }
+
+        .history-item.current {
+            border-left-color: var(--color-success);
+            background: rgba(16, 124, 16, 0.05);
+        }
+
+        .history-timestamp {
+            font-size: 11px;
+            color: var(--color-text-secondary);
+            margin-bottom: 4px;
+        }
+
+        .history-message {
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .history-author {
+            font-size: 12px;
+            color: var(--color-text-secondary);
+        }
+
+        /* ============================================
+           UTILITY COMPONENTS
+           ============================================ */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--color-text-secondary);
+        }
+
+        .empty-state-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+
+        .success-message {
+            background: rgba(16, 124, 16, 0.1);
+            border: 1px solid rgba(16, 124, 16, 0.3);
+            color: var(--color-success);
+            padding: 12px;
+            border-radius: 4px;
+            margin-bottom: 16px;
+            font-size: 12px;
+            display: none;
+        }
+
+        .success-message.show {
+            display: block;
+        }
+
+        /* ============================================
+           MODAL COMPONENTS
+           ============================================ */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--color-surface);
+            border-radius: 8px;
+            padding: 24px;
+            max-width: 500px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+
+        .modal-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        .modal-footer {
+            display: flex;
+            gap: 8px;
+            margin-top: 20px;
+            justify-content: flex-end;
+        }
+
+        /* ============================================
+           COMPARISON & STATS COMPONENTS
+           ============================================ */
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        .comparison-col {
+            padding: 12px;
+            background: var(--color-bg);
+            border-radius: 4px;
+            border: 1px solid var(--color-border);
+        }
+
+        .comparison-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--color-text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .stat-card {
+            background: var(--color-bg);
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid var(--color-border);
+        }
+
+        .stat-value {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--color-primary);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--color-text-secondary);
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <!-- ============================================
+         HEADER SECTION
+         ============================================ -->
+    <div class="header">
+        <div class="header-title">
+            <div class="logo">🌿</div>
+            <span>Design Branch Manager</span>
+        </div>
+        <div style="font-size: 12px; color: var(--color-text-secondary);">
+            Enterprise Edition
+        </div>
+    </div>
+
+    <!-- ============================================
+         TAB NAVIGATION
+         ============================================ -->
+    <div class="tabs">
+        <button class="tab active" data-tab="branches">Branches</button>
+        <button class="tab" data-tab="history">History</button>
+        <button class="tab" data-tab="merge">Merge</button>
+        <button class="tab" data-tab="team">Team</button>
+        <button class="tab" data-tab="settings">Settings</button>
+    </div>
+
+    <!-- ============================================
+         MAIN CONTENT AREA
+         ============================================ -->
+    <div class="content">
+        <!-- ============================================
+             BRANCHES TAB - Main branch management
+             ============================================ -->
+        <div class="section active" id="branches">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="font-size: 16px; font-weight: 600;">Branches</h2>
+                <button class="btn btn-primary" onclick="openCreateBranchModal()">
+                    + New Branch
+                </button>
+            </div>
+
+            <!-- Success message for branch creation -->
+            <div id="branchSuccess" class="success-message">✓ Branch created successfully</div>
+
+            <!-- Branch list container - populated dynamically -->
+            <div id="branchList" class="branch-list">
+                <div class="empty-state">Loading branches...</div>
+            </div>
+        </div>
+
+        <!-- ============================================
+             HISTORY TAB - Version history timeline
+             ============================================ -->
+        <div class="section" id="history">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="font-size: 16px; font-weight: 600;">Version History</h2>
+                <button class="btn btn-primary" onclick="createCommit()">
+                    + New Commit
+                </button>
+            </div>
+
+            <!-- History items - will be populated from API -->
+            <div class="history-container">
+                <div class="empty-state">Loading history...</div>
+            </div>
+        </div>
+
+        <!-- ============================================
+             MERGE TAB - Merge requests management
+             ============================================ -->
+        <div class="section" id="merge">
+            <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">Merge Requests</h2>
+
+            <!-- Filter buttons for merge requests -->
+            <div id="mergeFilters" style="display: flex; gap: 8px; margin-bottom: 16px;">
+                <button class="btn btn-primary merge-filter-btn" data-filter="open" onclick="filterMerge('open')">Open</button>
+                <button class="btn btn-secondary merge-filter-btn" data-filter="merged" onclick="filterMerge('merged')">Merged</button>
+                <button class="btn btn-secondary merge-filter-btn" data-filter="closed" onclick="filterMerge('closed')">Closed</button>
+                <button class="btn btn-secondary merge-filter-btn" data-filter="all" onclick="filterMerge('all')">All</button>
+            </div>
+
+            <!-- Merge request list - populated from API -->
+            <div id="mergeList">
+                <div class="empty-state">Loading merge requests...</div>
+            </div>
+        </div>
+
+        <!-- ============================================
+             TEAM TAB - Team member management
+             ============================================ -->
+        <div class="section" id="team">
+            <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">Team Members</h2>
+
+            <!-- Team statistics -->
+            <div class="stat-grid">
+                <div class="stat-card">
+                    <div class="stat-value">4</div>
+                    <div class="stat-label">Total Members</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">3</div>
+                    <div class="stat-label">Active Today</div>
+                </div>
+            </div>
+
+            <h3 style="font-size: 13px; font-weight: 600; margin-top: 20px; margin-bottom: 12px;">Members</h3>
+
+            <!-- Team member list - populated from API -->
+            <div class="branch-list">
+                <div class="empty-state">Loading team members...</div>
+            </div>
+
+            <!-- Invite member section -->
+            <h3 style="font-size: 13px; font-weight: 600; margin-top: 20px; margin-bottom: 12px;">Invite Member</h3>
+            <div class="input-group">
+                <input type="text" placeholder="Enter email address" id="inviteEmail">
+            </div>
+            <button class="btn btn-primary" onclick="inviteMember()">Send Invite</button>
+        </div>
+
+        <!-- ============================================
+             SETTINGS TAB - Project configuration
+             ============================================ -->
+        <div class="section" id="settings">
+            <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">Settings</h2>
+
+            <!-- Branch protection settings -->
+            <h3 style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">Branch Protection</h3>
+            <div class="card">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="requireApproval" checked>
+                    <span>Require approval before merging to main</span>
+                </label>
+            </div>
+
+            <div class="card">
+                <div class="input-group">
+                    <label class="label">Minimum Reviews Required</label>
+                    <input type="number" id="minReviews" value="2" min="0" max="10" style="width: 100px;">
+                </div>
+            </div>
+
+            <div class="card">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="autoDeleteMerged">
+                    <span>Auto-delete merged branches</span>
+                </label>
+            </div>
+
+            <!-- Notification settings -->
+            <h3 style="font-size: 13px; font-weight: 600; margin-top: 20px; margin-bottom: 12px;">Notifications</h3>
+            <div class="card">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="notifyMergeRequest" checked>
+                    <span>Notify on merge requests</span>
+                </label>
+            </div>
+
+            <div class="card">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="notifyBranchUpdate" checked>
+                    <span>Notify on branch updates</span>
+                </label>
+            </div>
+
+            <div style="margin-top: 20px;">
+                <button class="btn btn-primary" onclick="saveProjectSettings()">Save Settings</button>
+            </div>
+
+            <!-- Danger zone -->
+            <h3 style="font-size: 13px; font-weight: 600; margin-top: 20px; margin-bottom: 12px;">Danger Zone</h3>
+            <div class="card" style="border-color: var(--color-danger); background: rgba(232, 17, 35, 0.05);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div class="card-title" style="color: var(--color-danger);">Delete Project</div>
+                        <div style="font-size: 12px; color: var(--color-text-secondary);">
+                            This action cannot be undone
+                        </div>
+                    </div>
+                    <button class="btn btn-secondary" style="border-color: var(--color-danger); color: var(--color-danger);">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================
+         CREATE BRANCH MODAL
+         ============================================ -->
+    <div class="modal" id="createBranchModal">
+        <div class="modal-content">
+            <div class="modal-title">Create New Branch</div>
+            
+            <div class="input-group">
+                <label class="label">Branch Type</label>
+                <select id="branchType" onchange="updateBranchPrefix()">
+                    <option value="feature">Feature</option>
+                    <option value="hotfix">Hotfix</option>
+                    <option value="design">Design</option>
+                    <option value="experiment">Experiment</option>
+                </select>
+            </div>
+
+            <div class="input-group">
+                <label class="label">Branch Name</label>
+                <input type="text" id="branchName" placeholder="e.g., new-color-palette">
+            </div>
+
+            <div class="input-group">
+                <label class="label">Description (Optional)</label>
+                <textarea id="branchDesc" placeholder="What are you working on?"></textarea>
+            </div>
+
+            <div class="input-group">
+                <label class="label">Base Branch</label>
+                <select id="baseBranch">
+                    <option>main</option>
+                    <option>develop</option>
+                </select>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('createBranchModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="createBranch()">Create Branch</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================
+         MERGE BRANCH MODAL
+         ============================================ -->
+    <div class="modal" id="mergeBranchModal">
+        <div class="modal-content">
+            <div class="modal-title">Merge Branch</div>
+            
+            <div class="input-group">
+                <label class="label">Source Branch</label>
+                <input type="text" id="sourceBranch" disabled style="background: var(--color-bg);">
+            </div>
+
+            <div class="input-group">
+                <label class="label">Target Branch</label>
+                <select id="targetBranch">
+                    <option>main</option>
+                    <option>develop</option>
+                </select>
+            </div>
+
+            <div class="input-group">
+                <label class="label">Merge Request Title</label>
+                <input type="text" id="mergeTitle" placeholder="Describe your changes">
+            </div>
+
+            <div class="input-group">
+                <label class="label">Description</label>
+                <textarea id="mergeDesc" placeholder="Why are you making these changes?"></textarea>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('mergeBranchModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="submitMergeRequest()">Create Merge Request</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============================================
+         ADOBE EXPRESS SDK SCRIPTS
+         ============================================ -->
+    <script type="module" src="add-on-console-override.js"></script>
+    <script type="module" src="ui/index.js"></script>
+</body>
+</html>
