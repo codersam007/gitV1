@@ -108,7 +108,8 @@ const inviteMember = async (req, res, next) => {
         email,
         project?.name || 'Project',
         inviter?.name || 'Team Member',
-        invitationToken
+        invitationToken,
+        projectId
       );
     } catch (error) {
       console.error('Failed to send invitation email:', error);
@@ -129,10 +130,13 @@ const inviteMember = async (req, res, next) => {
 
 /**
  * Accept invitation
+ * Can be called with or without authentication
+ * If authenticated, links the invitation to the real user account
  */
 const acceptInvitation = async (req, res, next) => {
   try {
     const { token } = req.body;
+    const userId = req.userId; // May be undefined if not authenticated
 
     const teamMember = await TeamMember.findOne({
       invitationToken: token,
@@ -143,9 +147,42 @@ const acceptInvitation = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Invalid or expired invitation token', 404);
     }
 
+    // Check if invitation is expired (7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    if (teamMember.invitedAt < sevenDaysAgo) {
+      throw new AppError('EXPIRED', 'Invitation has expired', 410);
+    }
+
+    // If user is authenticated, link to their real account
+    if (userId) {
+      // Update userId if it was a temp user
+      if (teamMember.userId.startsWith('temp_')) {
+        teamMember.userId = userId;
+        
+        // Update or create User record
+        let user = await User.findOne({ userId });
+        if (!user) {
+          // Create user if doesn't exist
+          user = await User.create({
+            userId,
+            email: teamMember.email,
+            name: teamMember.email.split('@')[0],
+          });
+        } else {
+          // Update email if different
+          if (user.email !== teamMember.email) {
+            user.email = teamMember.email;
+            await user.save();
+          }
+        }
+      }
+    }
+
     teamMember.status = 'active';
     teamMember.joinedAt = new Date();
     teamMember.invitationToken = null;
+    teamMember.lastActiveAt = new Date();
     await teamMember.save();
 
     // Emit WebSocket event
@@ -227,10 +264,117 @@ const removeMember = async (req, res, next) => {
 
 const Project = require('../models/Project');
 
+/**
+ * Add designer directly (for hackathon demo - no email)
+ */
+const addDesigner = async (req, res, next) => {
+  try {
+    const { projectId } = req.params;
+    const { name, email } = req.body;
+    const userId = req.userId; // Manager who is adding
+
+    if (!name || !name.trim()) {
+      throw new AppError('VALIDATION_ERROR', 'Designer name is required', 400);
+    }
+
+    // Generate unique user ID for designer
+    const designerUserId = `designer_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    // Create or get user
+    let user = await User.findOne({ email: email || `${name.toLowerCase().replace(/\s+/g, '')}@demo.com` });
+    
+    if (!user) {
+      user = await User.create({
+        userId: designerUserId,
+        email: email || `${name.toLowerCase().replace(/\s+/g, '')}@demo.com`,
+        name: name.trim(),
+      });
+    }
+
+    // Check if already a team member
+    const existingMember = await TeamMember.findOne({
+      projectId,
+      userId: user.userId,
+    });
+
+    if (existingMember) {
+      throw new AppError('CONFLICT', 'User is already a team member', 409);
+    }
+
+    // Create team member record (immediately active, no invitation)
+    const teamMember = await TeamMember.create({
+      projectId,
+      userId: user.userId,
+      email: user.email,
+      role: 'designer',
+      status: 'active',
+      invitedBy: userId,
+      joinedAt: new Date(),
+      lastActiveAt: new Date(),
+    });
+
+    // Emit WebSocket event
+    emitTeamMemberAdded(projectId, teamMember);
+
+    res.status(201).json({
+      success: true,
+      message: 'Designer added successfully',
+      teamMember: {
+        ...teamMember.toObject(),
+        user: {
+          userId: user.userId,
+          name: user.name,
+          email: user.email,
+          avatarUrl: user.avatarUrl,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/**
+ * Get all users in project (for user switcher)
+ */
+const getAllUsers = async (req, res, next) => {
+  try {
+    const { projectId } = req.params;
+
+    const teamMembers = await TeamMember.find({ 
+      projectId,
+      status: 'active' 
+    }).sort({ joinedAt: 1 }).exec();
+
+    // Get user details for each team member
+    const usersWithDetails = await Promise.all(
+      teamMembers.map(async (member) => {
+        const user = await User.findOne({ userId: member.userId });
+        return {
+          userId: member.userId,
+          name: user?.name || member.email,
+          email: user?.email || member.email,
+          role: member.role,
+          avatarUrl: user?.avatarUrl,
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      users: usersWithDetails,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getTeamMembers,
   inviteMember,
   acceptInvitation,
   updateMemberRole,
   removeMember,
+  addDesigner,
+  getAllUsers,
 };

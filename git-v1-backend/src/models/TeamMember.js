@@ -30,10 +30,10 @@ const teamMemberSchema = new mongoose.Schema({
     index: true,
   },
   
-  // Role: owner, admin, designer, viewer
+  // Role: manager (full control), designer (limited access)
   role: {
     type: String,
-    enum: ['owner', 'admin', 'designer', 'viewer'],
+    enum: ['manager', 'designer'],
     default: 'designer',
   },
   

@@ -6,15 +6,20 @@
 
 const MergeRequest = require('../models/MergeRequest');
 const Branch = require('../models/Branch');
+const Commit = require('../models/Commit');
 const Project = require('../models/Project');
 const TeamMember = require('../models/TeamMember');
 const User = require('../models/User');
 const { AppError } = require('../middleware/errorHandler');
+const { generateCommitHash } = require('../utils/commitHash');
+const { getCurrentSnapshot, saveCurrentSnapshot, saveFile, copyCurrentSnapshot } = require('../services/storage/fileStorage');
+const { v4: uuidv4 } = require('uuid');
 const {
   emitMergeRequestCreated,
   emitMergeRequestApproved,
   emitMergeRequestMerged,
   emitMergeRequestClosed,
+  emitBranchUpdated,
 } = require('../services/websocket/websocketService');
 const {
   sendMergeRequestNotification,
@@ -152,24 +157,40 @@ const createMergeRequest = async (req, res, next) => {
     const { sourceBranch, targetBranch, title, description } = req.body;
     const userId = req.userId;
 
+    // Validate input
+    if (!sourceBranch || !targetBranch) {
+      throw new AppError('VALIDATION_ERROR', 'Source and target branches are required', 400);
+    }
+
+    // Trim branch names to handle any whitespace issues
+    const sourceBranchName = sourceBranch.trim();
+    const targetBranchName = targetBranch.trim();
+
     // Validate branches exist
     const sourceBranchDoc = await Branch.findOne({
       projectId,
-      name: sourceBranch,
+      name: sourceBranchName,
       status: 'active',
     });
 
     const targetBranchDoc = await Branch.findOne({
       projectId,
-      name: targetBranch,
+      name: targetBranchName,
       status: 'active',
     });
 
-    if (!sourceBranchDoc || !targetBranchDoc) {
-      throw new AppError('NOT_FOUND', 'Source or target branch not found', 404);
+    // Provide more specific error messages
+    if (!sourceBranchDoc && !targetBranchDoc) {
+      throw new AppError('NOT_FOUND', `Both source branch "${sourceBranchName}" and target branch "${targetBranchName}" not found`, 404);
+    }
+    if (!sourceBranchDoc) {
+      throw new AppError('NOT_FOUND', `Source branch "${sourceBranchName}" not found`, 404);
+    }
+    if (!targetBranchDoc) {
+      throw new AppError('NOT_FOUND', `Target branch "${targetBranchName}" not found`, 404);
     }
 
-    if (sourceBranch === targetBranch) {
+    if (sourceBranchName === targetBranchName) {
       throw new AppError('VALIDATION_ERROR', 'Source and target branches cannot be the same', 400);
     }
 
@@ -184,10 +205,10 @@ const createMergeRequest = async (req, res, next) => {
     const project = await Project.findOne({ projectId });
     const minReviews = project?.settings?.branchProtection?.minReviews || 2;
 
-    // Get team members who can review
+    // Get team members who can review (managers and designers)
     const reviewers = await TeamMember.find({
       projectId,
-      role: { $in: ['owner', 'admin', 'designer'] },
+      role: { $in: ['manager', 'designer'] },
       status: 'active',
     }).limit(minReviews);
 
@@ -195,8 +216,8 @@ const createMergeRequest = async (req, res, next) => {
     const mergeRequest = await MergeRequest.create({
       projectId,
       mergeRequestId,
-      sourceBranch,
-      targetBranch,
+      sourceBranch: sourceBranchName,
+      targetBranch: targetBranchName,
       title,
       description: description || '',
       status: 'open',
@@ -255,10 +276,29 @@ const approveMergeRequest = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Merge request not found', 404);
     }
 
-    // Find reviewer
-    const reviewer = mergeRequest.reviewers.find(r => r.userId === userId);
+    // Check if user is a manager (managers can always approve)
+    const teamMember = await TeamMember.findOne({
+      projectId,
+      userId,
+      status: 'active',
+    });
+
+    const isManager = teamMember && teamMember.role === 'manager';
+
+    // Find reviewer or add manager if not in list
+    let reviewer = mergeRequest.reviewers.find(r => r.userId === userId);
+    
     if (!reviewer) {
-      throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
+      if (isManager) {
+        // Managers can approve even if not in reviewers list - add them
+        reviewer = {
+          userId: userId,
+          status: 'pending',
+        };
+        mergeRequest.reviewers.push(reviewer);
+      } else {
+        throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
+      }
     }
 
     // Update reviewer status
@@ -320,9 +360,29 @@ const requestChanges = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Merge request not found', 404);
     }
 
-    const reviewer = mergeRequest.reviewers.find(r => r.userId === userId);
+    // Check if user is a manager (managers can always request changes)
+    const teamMember = await TeamMember.findOne({
+      projectId,
+      userId,
+      status: 'active',
+    });
+
+    const isManager = teamMember && teamMember.role === 'manager';
+
+    // Find reviewer or add manager if not in list
+    let reviewer = mergeRequest.reviewers.find(r => r.userId === userId);
+    
     if (!reviewer) {
-      throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
+      if (isManager) {
+        // Managers can request changes even if not in reviewers list - add them
+        reviewer = {
+          userId: userId,
+          status: 'pending',
+        };
+        mergeRequest.reviewers.push(reviewer);
+      } else {
+        throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
+      }
     }
 
     reviewer.status = 'requested_changes';
@@ -369,54 +429,176 @@ const completeMerge = async (req, res, next) => {
       throw new AppError('VALIDATION_ERROR', 'Merge request must be approved before merging', 400);
     }
 
-    // Check branch protection (if target is main)
+    // Get source and target branches
+    const sourceBranch = await Branch.findOne({
+      projectId,
+      name: mergeRequest.sourceBranch,
+      status: 'active',
+    });
+
     const targetBranch = await Branch.findOne({
       projectId,
       name: mergeRequest.targetBranch,
+      status: 'active',
     });
 
-    if (targetBranch?.isPrimary) {
+    if (!sourceBranch) {
+      throw new AppError('NOT_FOUND', 'Source branch not found or inactive', 404);
+    }
+
+    if (!targetBranch) {
+      throw new AppError('NOT_FOUND', 'Target branch not found or inactive', 404);
+    }
+
+    // Check branch protection (if target is main)
+    if (targetBranch.isPrimary) {
       const project = await Project.findOne({ projectId });
       if (project?.settings?.branchProtection?.requireApproval) {
         // Already checked above (status must be approved)
       }
     }
 
-    // TODO: Perform actual merge
-    // 1. Get source branch snapshot
-    // 2. Get target branch snapshot
-    // 3. Merge changes
-    // 4. Create merge commit
-    // 5. Update target branch
+    // Perform actual merge: Replace target branch content with source branch content
+    // Strategy: Completely overwrite target branch snapshot with source branch snapshot
+    // This means branch2 will have the exact same content as branch1 (all properties preserved)
+    console.log(`Merging branch "${mergeRequest.sourceBranch}" (${sourceBranch._id}) into "${mergeRequest.targetBranch}" (${targetBranch._id})`);
+    console.log(`Strategy: Completely replace target branch content with source branch content`);
 
-    // Update merge request
+    // Simply copy the entire snapshot from source branch to target branch
+    // This preserves ALL properties: font, size, color, alignment, spacing, corner radius, etc.
+    let mergedSnapshot = null;
+    try {
+      await copyCurrentSnapshot(projectId, sourceBranch._id.toString(), targetBranch._id.toString());
+      console.log(`✅ Successfully copied source branch snapshot to target branch (target branch content replaced)`);
+      
+      // Verify the copy by reading it back and parse it for later use
+      const targetSnapshotBuffer = await getCurrentSnapshot(projectId, targetBranch._id.toString());
+      mergedSnapshot = JSON.parse(targetSnapshotBuffer.toString());
+      
+      if (mergedSnapshot.pages && mergedSnapshot.pages.length > 0) {
+        const targetPage = mergedSnapshot.pages[0];
+        const elementCount = targetPage.artboards?.[0]?.elements?.length || 0;
+        console.log(`📦 Target branch now contains ${elementCount} elements with all properties preserved`);
+      }
+    } catch (error) {
+      console.error('❌ Error copying source branch snapshot:', error);
+      throw new AppError('INTERNAL_ERROR', `Failed to copy source branch snapshot: ${error.message}`, 500);
+    }
+
+    // 4. Create merge commit
+    // Get the merged snapshot buffer to save as commit file
+    const mergedSnapshotBuffer = await getCurrentSnapshot(projectId, targetBranch._id.toString());
+    
+    const parentHash = targetBranch.lastCommit?.hash || null;
+    const commitMessage = `Merge ${mergeRequest.sourceBranch} into ${mergeRequest.targetBranch}`;
+    const commitHash = generateCommitHash(
+      projectId,
+      targetBranch._id.toString(),
+      commitMessage,
+      userId,
+      parentHash
+    );
+
+    // Save commit snapshot file (using the merged snapshot)
+    const commitFilePath = await saveFile(
+      mergedSnapshotBuffer,
+      projectId,
+      targetBranch._id.toString(),
+      commitHash,
+      'json'
+    );
+
+    // Count elements for commit metadata (mergedSnapshot already parsed above)
+    const elementCount = mergedSnapshot?.pages?.[0]?.artboards?.[0]?.elements?.length || 0;
+
+    // Create commit record
+    const mergeCommit = await Commit.create({
+      projectId,
+      branchId: targetBranch._id,
+      hash: commitHash,
+      message: commitMessage,
+      authorId: userId,
+      parentCommitHash: parentHash,
+      changes: {
+        filesAdded: 0,
+        filesModified: 1,
+        filesDeleted: 0,
+        componentsUpdated: elementCount,
+      },
+      snapshot: {
+        fileUrl: commitFilePath,
+        thumbnailUrl: null,
+      },
+    });
+
+    // 6. Update target branch's last commit
+    targetBranch.lastCommit = {
+      hash: mergeCommit.hash,
+      message: mergeCommit.message,
+      timestamp: mergeCommit.timestamp,
+      authorId: mergeCommit.authorId,
+    };
+    targetBranch.updatedAt = new Date();
+    await targetBranch.save();
+
+    // Update merge request stats
+    // Use mergedSnapshot which we already parsed earlier
+    mergeRequest.stats = {
+      filesChanged: 1,
+      componentsUpdated: mergedSnapshot.pages?.[0]?.artboards?.[0]?.elements?.length || 0,
+    };
+
+    // Update merge request status
     mergeRequest.status = 'merged';
     mergeRequest.mergedAt = new Date();
     mergeRequest.mergedBy = userId;
     await mergeRequest.save();
+    console.log(`Merge request #${mergeRequest.mergeRequestId} status updated to 'merged'`);
+
+    // Emit branch updated event
+    emitBranchUpdated(projectId, targetBranch);
 
     // If auto-delete enabled, mark source branch as merged
     const project = await Project.findOne({ projectId });
     if (project?.settings?.branchProtection?.autoDeleteMerged) {
-      const sourceBranch = await Branch.findOne({
+      const sourceBranchToUpdate = await Branch.findOne({
         projectId,
         name: mergeRequest.sourceBranch,
       });
-      if (sourceBranch) {
-        sourceBranch.status = 'merged';
-        await sourceBranch.save();
+      if (sourceBranchToUpdate) {
+        sourceBranchToUpdate.status = 'merged';
+        await sourceBranchToUpdate.save();
+        console.log(`Source branch "${mergeRequest.sourceBranch}" marked as merged`);
       }
     }
 
     // Emit WebSocket event
     emitMergeRequestMerged(projectId, mergeRequest);
 
+    // Reload merge request to get updated data
+    const updatedMergeRequest = await MergeRequest.findOne({
+      projectId,
+      mergeRequestId: parseInt(mergeRequestId),
+    });
+
+    console.log('Merge completed successfully. Updated merge request status:', updatedMergeRequest?.status);
+
     res.json({
       success: true,
-      mergeRequest,
+      mergeRequest: updatedMergeRequest || mergeRequest,
+      targetBranch: {
+        id: targetBranch._id.toString(),
+        name: targetBranch.name,
+      },
+      sourceBranch: {
+        id: sourceBranch._id.toString(),
+        name: sourceBranch.name,
+      },
       message: 'Merge completed successfully',
     });
   } catch (error) {
+    console.error('Error in completeMerge:', error);
+    console.error('Error stack:', error.stack);
     next(error);
   }
 };

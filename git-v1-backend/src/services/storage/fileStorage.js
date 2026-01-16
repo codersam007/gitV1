@@ -154,6 +154,33 @@ const getCurrentSnapshot = async (projectId, branchId) => {
 };
 
 /**
+ * Copy current snapshot from source branch to target branch
+ * @param {String} projectId - Project ID
+ * @param {String} sourceBranchId - Source branch ID
+ * @param {String} targetBranchId - Target branch ID
+ * @returns {String} File path of copied snapshot
+ */
+const copyCurrentSnapshot = async (projectId, sourceBranchId, targetBranchId) => {
+  try {
+    // Get source branch snapshot
+    const sourceSnapshot = await getCurrentSnapshot(projectId, sourceBranchId);
+    
+    // Save to target branch
+    const targetPath = await saveCurrentSnapshot(sourceSnapshot, projectId, targetBranchId);
+    
+    return targetPath;
+  } catch (error) {
+    // If source snapshot doesn't exist, that's okay - new branch starts empty
+    if (error.message === 'Current snapshot not found') {
+      console.log(`No snapshot found for source branch ${sourceBranchId}, new branch will start empty`);
+      return null;
+    }
+    console.error('Error copying current snapshot:', error);
+    throw new Error('Failed to copy current snapshot');
+  }
+};
+
+/**
  * TODO: Implement S3 upload
  * Example implementation:
  * 
@@ -179,4 +206,5 @@ module.exports = {
   deleteFile,
   saveCurrentSnapshot,
   getCurrentSnapshot,
+  copyCurrentSnapshot,
 };

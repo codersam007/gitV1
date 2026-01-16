@@ -20,7 +20,13 @@ const AUTH_API_URL = 'http://localhost:3000/auth';
 
 // Current project ID (will be set when project is loaded/created)
 let currentProjectId = null;
-let currentUserId = null;
+let currentUserId = null; // Current active user ID (for switching)
+let currentUserRole = null; // Current user's role: 'manager' or 'designer'
+let currentUserName = null; // Current user's name
+let allUsers = []; // List of all users in project
+let currentBranchId = null; // Current active branch ID
+let currentBranchName = null; // Current active branch name
+let sandboxProxy = null; // Sandbox API proxy (set during initialization)
 
 // ============================================
 // INITIALIZATION
@@ -33,7 +39,10 @@ addOnUISdk.ready.then(async () => {
 
     // Get the proxy object for Document Sandbox runtime communication
     // This allows us to interact with the Adobe Express document
-    const sandboxProxy = await runtime.apiProxy("documentSandbox");
+    sandboxProxy = await runtime.apiProxy("documentSandbox");
+    
+    // Initialize sandbox with current branch (if available)
+    // This will be set after project loads
 
     // Initialize UI event listeners
     initializeEventListeners();
@@ -43,6 +52,17 @@ addOnUISdk.ready.then(async () => {
     
     if (!authSuccess) {
         console.error('Authentication failed. Please check backend connection.');
+        return;
+    }
+
+    // Check for invitation token in URL parameters
+    const urlParams = new URLSearchParams(window.location.search);
+    const inviteToken = urlParams.get('invite_token');
+    const inviteProjectId = urlParams.get('project_id');
+    
+    if (inviteToken && inviteProjectId) {
+        console.log('Invitation detected:', { inviteToken, inviteProjectId });
+        await handleInvitationAcceptance(inviteToken, inviteProjectId);
         return;
     }
 
@@ -64,10 +84,54 @@ addOnUISdk.ready.then(async () => {
     if (!currentProjectId) {
         showProjectSelection();
     } else {
-        // Load initial data from backend (only if authenticated)
+    // Load initial data from backend (only if authenticated)
         await loadProjectData();
+        
+        // Initialize branch after project loads
+        await initializeCurrentBranch();
     }
 });
+
+/**
+ * Initialize current branch from saved state or default to main branch
+ */
+async function initializeCurrentBranch() {
+    if (!currentProjectId || !sandboxProxy) return;
+    
+    try {
+        // Get branches to find main branch
+        const branchesResponse = await apiCall(`/branches?projectId=${currentProjectId}`, 'GET');
+        
+        if (branchesResponse.success && branchesResponse.branches && branchesResponse.branches.length > 0) {
+            // Find main branch or use first branch
+            const mainBranch = branchesResponse.branches.find(b => b.isPrimary || b.name === 'main') 
+                || branchesResponse.branches[0];
+            
+            if (mainBranch) {
+                currentBranchId = mainBranch._id?.toString() || mainBranch.id;
+                currentBranchName = mainBranch.name;
+                
+                // Initialize sandbox with current branch
+                await sandboxProxy.initializeBranch(currentBranchId, currentBranchName);
+                
+                // Try to load branch snapshot
+                try {
+                    const snapshotResponse = await apiCall(`/branches/${currentBranchId}/snapshot?projectId=${currentProjectId}`, 'GET');
+                    if (snapshotResponse.success && snapshotResponse.snapshot) {
+                        await sandboxProxy.importDocument(snapshotResponse.snapshot);
+                        console.log('Loaded branch snapshot on initialization');
+                    }
+                } catch (error) {
+                    console.log('No snapshot available for initial branch:', error);
+                }
+                
+                console.log(`Initialized with branch: ${currentBranchName}`);
+            }
+        }
+        } catch (error) {
+        console.error('Error initializing current branch:', error);
+        }
+    }
 
 // ============================================
 // AUTHENTICATION HELPERS
@@ -154,6 +218,9 @@ async function initializeAuth() {
         if (data.success && data.token) {
             setToken(data.token);
             currentUserId = data.user.userId;
+            currentUserName = data.user.name;
+            // Set manager as default for hackathon demo
+            currentUserRole = 'manager';
             console.log('✅ Auto-logged in:', data.user.name);
             return true;
         } else {
@@ -246,6 +313,35 @@ function initializeEventListeners() {
             }
         });
     });
+    
+    // User switcher functionality
+    const userSwitcherBtn = document.getElementById('userSwitcherBtn');
+    const userSwitcherDropdown = document.getElementById('userSwitcherDropdown');
+    const addDesignerBtn = document.getElementById('addDesignerBtn');
+    
+    if (userSwitcherBtn && userSwitcherDropdown) {
+        // Toggle dropdown
+        userSwitcherBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isVisible = userSwitcherDropdown.style.display === 'block';
+            userSwitcherDropdown.style.display = isVisible ? 'none' : 'block';
+        });
+        
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!userSwitcherBtn.contains(e.target) && !userSwitcherDropdown.contains(e.target)) {
+                userSwitcherDropdown.style.display = 'none';
+            }
+        });
+    }
+    
+    if (addDesignerBtn) {
+        addDesignerBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openAddDesignerModal();
+            userSwitcherDropdown.style.display = 'none';
+        });
+    }
 }
 
 // ============================================
@@ -338,7 +434,16 @@ async function openCreateBranchModal() {
 async function openMergeBranchModal(e) {
     e.stopPropagation();
     const branchItem = e.target.closest('.branch-item');
-    const branchName = branchItem.querySelector('.branch-name').textContent;
+    
+    // Get the clean branch name from data attribute instead of textContent
+    // This avoids including "(current)" label and extra whitespace
+    const branchName = branchItem.getAttribute('data-branch-name');
+    
+    if (!branchName) {
+        console.error('Could not find branch name in branch item');
+        showNotification('Error: Could not determine branch name', 'error');
+        return;
+    }
     
     // Set the source branch (read-only)
     document.getElementById('sourceBranch').value = branchName;
@@ -468,6 +573,7 @@ function addBranchToList(branchName) {
  * @param {Event} e - The click event
  */
 async function deleteBranch(e) {
+    console.log('deleteBranch called', e);
     e.stopPropagation();
     
     if (!currentProjectId) {
@@ -476,7 +582,24 @@ async function deleteBranch(e) {
     }
     
     const branchItem = e.target.closest('.branch-item');
-    const branchName = branchItem.querySelector('.branch-name').textContent;
+    console.log('Branch item found:', branchItem);
+    
+    if (!branchItem) {
+        console.error('Could not find branch item');
+        showNotification('Error: Could not find branch item', 'error');
+        return;
+    }
+    
+    // Get the clean branch name from data attribute instead of textContent
+    // This avoids including "(current)" label and extra whitespace
+    const branchName = branchItem.getAttribute('data-branch-name');
+    console.log('Branch name from data attribute:', branchName);
+    
+    if (!branchName) {
+        console.error('Could not find branch name in branch item');
+        showNotification('Error: Could not determine branch name', 'error');
+        return;
+    }
     
     // Confirmation dialog
     const confirmed = await showConfirmation(`Are you sure you want to delete branch '${branchName}'?`);
@@ -512,10 +635,197 @@ function selectBranch(elem) {
     // Highlight selected branch
     elem.style.borderColor = 'var(--color-primary)';
     elem.style.background = 'rgba(20, 115, 230, 0.03)';
+}
 
-    // TODO: Load branch details or switch to this branch
-    // const branchName = elem.querySelector('.branch-name').textContent;
-    // switchToBranch(branchName);
+/**
+ * Checkout a branch (switch to it)
+ * This is the main branch switching function (like git checkout)
+ * 
+ * @param {string} branchId - Branch ID to checkout
+ * @param {string} branchName - Branch name to checkout
+ */
+async function checkoutBranch(branchId, branchName) {
+    if (!currentProjectId) {
+        showNotification('No project selected', 'warning');
+        return;
+    }
+    
+    if (!sandboxProxy) {
+        showNotification('Sandbox not initialized. Please refresh the page.', 'error');
+        return;
+    }
+    
+    // If switching to the same branch, do nothing
+    if (currentBranchId === branchId) {
+        showNotification(`Already on branch: ${branchName}`, 'info');
+        return;
+    }
+    
+    try {
+        // Step 1: Check for uncommitted changes
+        let hasUncommitted = false;
+        let currentStateHash = null;
+        
+        try {
+            currentStateHash = await sandboxProxy.getCurrentStateHash();
+            if (currentBranchId) {
+                // Get saved state hash for current branch
+                const currentBranch = await apiCall(`/branches/${currentBranchId}/snapshot?projectId=${currentProjectId}`, 'GET');
+                const savedHash = currentBranch.branch?.stateHash;
+                
+                if (savedHash) {
+                    hasUncommitted = await sandboxProxy.hasUncommittedChanges(savedHash);
+                }
+            }
+        } catch (error) {
+            console.warn('Could not check for uncommitted changes:', error);
+            // Continue anyway
+        }
+        
+        // Step 2: If there are uncommitted changes, prompt user
+        if (hasUncommitted && currentBranchId) {
+            const action = await showUncommittedChangesDialog();
+            
+            if (action === 'cancel') {
+                return;
+            } else if (action === 'commit') {
+                // Open commit modal
+                await createCommit();
+                // Wait for commit to complete (user will need to complete it)
+                showNotification('Please complete the commit before switching branches', 'info');
+                return;
+            } else if (action === 'discard') {
+                const confirmed = await showConfirmation(
+                    'Are you sure you want to discard your uncommitted changes? This action cannot be undone.'
+                );
+                if (!confirmed) {
+                    return;
+                }
+            }
+            // If action is 'save', we'll save the current state before switching
+        }
+        
+        // Step 3: Export current document state (if we have a current branch)
+        let currentSnapshot = null;
+        if (currentBranchId) {
+            try {
+                currentSnapshot = await sandboxProxy.exportDocument();
+            } catch (error) {
+                console.error('Error exporting current document:', error);
+                showNotification('Warning: Could not save current document state', 'warning');
+            }
+        }
+        
+        // Step 4: Call backend checkout endpoint
+        const checkoutResponse = await apiCall(`/branches/checkout?projectId=${currentProjectId}`, 'POST', {
+            sourceBranchId: currentBranchId,
+            targetBranchId: branchId,
+            currentSnapshot: currentSnapshot
+        });
+        
+        if (!checkoutResponse.success) {
+            throw new Error(checkoutResponse.error?.message || 'Checkout failed');
+        }
+        
+        // Step 5: Import target branch snapshot into document
+        if (checkoutResponse.snapshot) {
+            try {
+                await sandboxProxy.importDocument(checkoutResponse.snapshot);
+                console.log('Document imported from branch snapshot');
+            } catch (error) {
+                console.error('Error importing document:', error);
+                showNotification('Warning: Could not load branch snapshot. Document may be empty.', 'warning');
+            }
+        } else {
+            // No snapshot available, clear document or keep current
+            const clearDoc = await showConfirmation(
+                'No snapshot found for this branch. Would you like to start with a fresh document?'
+            );
+            if (clearDoc) {
+                await sandboxProxy.clearDocument();
+            }
+        }
+        
+        // Step 6: Update current branch state
+        currentBranchId = branchId;
+        currentBranchName = branchName;
+        
+        // Update sandbox branch state
+        await sandboxProxy.setCurrentBranch(branchId, branchName);
+        
+        // Update saved state hash
+        if (currentStateHash) {
+            await sandboxProxy.updateBranchStateHash(currentStateHash);
+        }
+        
+        // Step 7: Update UI
+        await loadBranches(); // Reload branches to update current branch indicator
+        showNotification(`Switched to branch: ${branchName}`, 'success');
+        
+    } catch (error) {
+        console.error('Error checking out branch:', error);
+        showNotification(`Failed to checkout branch: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Show dialog for handling uncommitted changes
+ * @returns {Promise<string>} User's choice: 'commit', 'save', 'discard', or 'cancel'
+ */
+function showUncommittedChangesDialog() {
+    return new Promise((resolve) => {
+        // Create uncommitted changes modal if it doesn't exist
+        let uncommittedModal = document.getElementById('uncommittedChangesModal');
+        if (!uncommittedModal) {
+            uncommittedModal = document.createElement('div');
+            uncommittedModal.id = 'uncommittedChangesModal';
+            uncommittedModal.className = 'modal';
+            uncommittedModal.innerHTML = `
+                <div class="modal-content" style="max-width: 500px;">
+                    <div class="modal-title">Uncommitted Changes</div>
+                    <div style="margin-bottom: 20px; color: var(--color-text);">
+                        You have uncommitted changes in your current branch. What would you like to do?
+                    </div>
+                    <div class="modal-footer" style="flex-direction: column; gap: 8px;">
+                        <button id="uncommittedCommit" class="btn btn-primary" style="width: 100%;">Commit Changes</button>
+                        <button id="uncommittedSave" class="btn btn-secondary" style="width: 100%;">Save & Switch</button>
+                        <button id="uncommittedDiscard" class="btn btn-secondary" style="width: 100%; border-color: var(--color-danger); color: var(--color-danger);">Discard Changes</button>
+                        <button id="uncommittedCancel" class="btn btn-secondary" style="width: 100%;">Cancel</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(uncommittedModal);
+            
+            // Handle clicks
+            document.getElementById('uncommittedCommit').onclick = () => {
+                uncommittedModal.classList.remove('active');
+                resolve('commit');
+            };
+            document.getElementById('uncommittedSave').onclick = () => {
+                uncommittedModal.classList.remove('active');
+                resolve('save');
+            };
+            document.getElementById('uncommittedDiscard').onclick = () => {
+                uncommittedModal.classList.remove('active');
+                resolve('discard');
+            };
+            document.getElementById('uncommittedCancel').onclick = () => {
+                uncommittedModal.classList.remove('active');
+                resolve('cancel');
+            };
+            
+            // Close on backdrop click
+            uncommittedModal.onclick = (e) => {
+                if (e.target === uncommittedModal) {
+                    uncommittedModal.classList.remove('active');
+                    resolve('cancel');
+                }
+            };
+        }
+        
+        // Show modal
+        uncommittedModal.classList.add('active');
+    });
 }
 
 /**
@@ -536,12 +846,32 @@ function updateBranchPrefix() {
  * This function will call the backend API when ready
  */
 async function submitMergeRequest() {
-    const sourceBranch = document.getElementById('sourceBranch').value;
-    const targetBranch = document.getElementById('targetBranch').value;
-    const title = document.getElementById('mergeTitle').value.trim();
-    const description = document.getElementById('mergeDesc').value.trim();
+    const sourceBranchInput = document.getElementById('sourceBranch');
+    const targetBranchSelect = document.getElementById('targetBranch');
+    const titleInput = document.getElementById('mergeTitle');
+    const descInput = document.getElementById('mergeDesc');
+    
+    if (!sourceBranchInput || !targetBranchSelect || !titleInput) {
+        showNotification('Merge request form is not properly initialized', 'error');
+        return;
+    }
+    
+    const sourceBranch = sourceBranchInput.value.trim();
+    const targetBranch = targetBranchSelect.value.trim();
+    const title = titleInput.value.trim();
+    const description = descInput ? descInput.value.trim() : '';
 
     // Validation
+    if (!sourceBranch) {
+        showNotification('Source branch is required', 'warning');
+        return;
+    }
+    
+    if (!targetBranch) {
+        showNotification('Target branch is required', 'warning');
+        return;
+    }
+    
     if (!title) {
         showNotification('Merge request title is required', 'warning');
         return;
@@ -558,6 +888,13 @@ async function submitMergeRequest() {
     }
 
     try {
+        console.log('Creating merge request:', {
+            projectId: currentProjectId,
+            sourceBranch,
+            targetBranch,
+            title
+        });
+        
         const response = await apiCall(`/merge-requests`, 'POST', {
             projectId: currentProjectId,
             sourceBranch: sourceBranch,
@@ -579,7 +916,8 @@ async function submitMergeRequest() {
         }
     } catch (error) {
         console.error('Error creating merge request:', error);
-        showNotification(`Failed to create merge request: ${error.message}`, 'error');
+        const errorMessage = error.message || 'Unknown error occurred';
+        showNotification(`Failed to create merge request: ${errorMessage}`, 'error');
     }
 }
 
@@ -703,44 +1041,124 @@ async function requestChanges(btnOrEvent) {
  * @param {HTMLElement|Event} btnOrEvent - The merge button element or click event
  */
 async function completeMerge(btnOrEvent) {
+    console.log('completeMerge called', btnOrEvent);
+    
     // Handle both button element and event
-    const btn = btnOrEvent.target || btnOrEvent;
-    if (btnOrEvent.stopPropagation) {
-        btnOrEvent.stopPropagation();
+    const event = btnOrEvent instanceof Event ? btnOrEvent : null;
+    const btn = event?.target || btnOrEvent?.target || btnOrEvent;
+    
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
     }
     
+    console.log('Button element:', btn);
+    
+    // Defensive checks
     if (!currentProjectId) {
+        console.error('No project ID');
         showNotification('No project selected', 'warning');
         return;
     }
 
-    const card = btn.closest('.card');
-    const mergeRequestId = card?.getAttribute('data-merge-id') || btn.getAttribute('data-merge-id');
+    const card = btn?.closest('.card');
+    console.log('Card element:', card);
+    
+    if (!card) {
+        console.error('Could not find card element');
+        showNotification('Error: Could not find merge request card', 'error');
+        return;
+    }
+    
+    const mergeRequestId = card.getAttribute('data-merge-id') || btn?.getAttribute('data-merge-id');
+    console.log('Merge request ID:', mergeRequestId);
     
     if (!mergeRequestId) {
+        console.error('Could not find merge request ID');
         showNotification('Error: Could not find merge request ID', 'error');
+        return;
+    }
+
+    // Check if button is already disabled (prevent double-clicks)
+    if (btn && btn.disabled) {
+        console.log('Button already disabled, merge in progress');
         return;
     }
 
     const confirmed = await showConfirmation('Are you sure you want to merge this request?');
     if (!confirmed) {
+        console.log('User cancelled merge');
         return;
     }
 
-    // Disable button
+    // Disable button to prevent double-clicks
+    if (btn) {
     btn.disabled = true;
     btn.textContent = 'Merging...';
+    }
 
     try {
+        console.log('Calling merge API:', `/merge-requests/${mergeRequestId}/merge?projectId=${currentProjectId}`);
         const response = await apiCall(`/merge-requests/${mergeRequestId}/merge?projectId=${currentProjectId}`, 'POST');
+        console.log('Merge API response:', response);
         
         if (response.success) {
-            showNotification('Merge completed successfully!', 'success');
-            await loadMergeRequests(); // Reload to show updated status
-            await loadBranches(); // Reload branches in case any were merged/deleted
+            console.log('✅ Merge completed successfully, response:', response);
+            
+            // Get target branch info from response
+            const targetBranchId = response.targetBranch?.id;
+            const targetBranchName = response.targetBranch?.name;
+            
+            // Check if user is currently on the target branch
+            const isOnTargetBranch = currentBranchId === targetBranchId;
+            
+            if (isOnTargetBranch && sandboxProxy) {
+                // User is on target branch - automatically reload document with merged content
+                console.log(`User is on target branch "${targetBranchName}", reloading document with merged content...`);
+                showNotification('Merge completed! Reloading document with merged content...', 'info');
+                
+                try {
+                    // Get the merged snapshot from backend
+                    const snapshotResponse = await apiCall(`/branches/${targetBranchId}/snapshot?projectId=${currentProjectId}`, 'GET');
+                    
+                    if (snapshotResponse.success && snapshotResponse.snapshot) {
+                        // Import the merged snapshot into the document
+                        await sandboxProxy.importDocument(snapshotResponse.snapshot);
+                        console.log('✅ Document reloaded with merged content');
+                        showNotification('Merge completed! Document updated with merged content.', 'success');
+                    } else {
+                        console.warn('No snapshot found for target branch, document may be empty');
+                        showNotification('Merge completed! (No content found in target branch)', 'warning');
+                    }
+                } catch (error) {
+                    console.error('Error reloading document after merge:', error);
+                    showNotification('Merge completed! Please checkout to target branch to see changes.', 'warning');
+                }
+            } else {
+                // User is not on target branch - suggest checkout
+                showNotification(`Merge completed! Checkout to "${targetBranchName}" to see the merged content.`, 'success');
+            }
+            
+            // Don't update button state directly - let DOM recreation handle it
+            // This avoids stale references and ensures clean state
+            
+            // Reload merge requests to show updated status
+            // Use 'all' filter to ensure merged requests are visible
+            await loadMergeRequests('all');
+            
+            // Also reload branches in case any were merged/deleted
+            await loadBranches();
+        } else {
+            console.error('❌ Merge failed, response:', response);
+            throw new Error(response.message || response.error?.message || 'Merge failed');
         }
     } catch (error) {
         console.error('Error completing merge:', error);
+        console.error('Error details:', {
+            message: error.message,
+            stack: error.stack,
+            response: error.response
+        });
         showNotification(`Failed to complete merge: ${error.message}`, 'error');
         // Re-enable button on error
         btn.disabled = false;
@@ -910,6 +1328,8 @@ function showConfirmation(message) {
     return new Promise((resolve) => {
         // Create confirmation modal if it doesn't exist
         let confirmModal = document.getElementById('confirmationModal');
+        let cancelBtn, okBtn;
+        
         if (!confirmModal) {
             confirmModal = document.createElement('div');
             confirmModal.id = 'confirmationModal';
@@ -925,28 +1345,58 @@ function showConfirmation(message) {
                 </div>
             `;
             document.body.appendChild(confirmModal);
+            cancelBtn = document.getElementById('confirmCancel');
+            okBtn = document.getElementById('confirmOk');
+        } else {
+            // Get existing buttons
+            cancelBtn = document.getElementById('confirmCancel');
+            okBtn = document.getElementById('confirmOk');
             
-            // Handle clicks
-            document.getElementById('confirmCancel').onclick = () => {
-                confirmModal.classList.remove('active');
-                resolve(false);
-            };
-            document.getElementById('confirmOk').onclick = () => {
-                confirmModal.classList.remove('active');
-                resolve(true);
-            };
-            
-            // Close on backdrop click
-            confirmModal.onclick = (e) => {
-                if (e.target === confirmModal) {
-                    confirmModal.classList.remove('active');
-                    resolve(false);
-                }
-            };
+            // Remove old event listeners by cloning and replacing
+            // This ensures no stale listeners remain
+            const newCancelBtn = cancelBtn.cloneNode(true);
+            const newOkBtn = okBtn.cloneNode(true);
+            cancelBtn.replaceWith(newCancelBtn);
+            okBtn.replaceWith(newOkBtn);
+            cancelBtn = newCancelBtn;
+            okBtn = newOkBtn;
         }
         
+        // Create fresh promise resolver that can only be called once
+        let resolved = false;
+        const resolveOnce = (value) => {
+            if (!resolved) {
+                resolved = true;
+                confirmModal.classList.remove('active');
+                resolve(value);
+            }
+        };
+        
+        // Attach event listeners using addEventListener (not onclick)
+        // Remove any existing listeners first by using a named function
+        const handleCancel = () => resolveOnce(false);
+        const handleOk = () => resolveOnce(true);
+        const handleBackdrop = (e) => {
+                if (e.target === confirmModal) {
+                resolveOnce(false);
+            }
+        };
+        
+        // Remove old listeners if they exist (using named functions)
+        cancelBtn.removeEventListener('click', handleCancel);
+        okBtn.removeEventListener('click', handleOk);
+        confirmModal.removeEventListener('click', handleBackdrop);
+        
+        // Add new listeners
+        cancelBtn.addEventListener('click', handleCancel);
+        okBtn.addEventListener('click', handleOk);
+        confirmModal.addEventListener('click', handleBackdrop);
+        
         // Set message and show
-        document.getElementById('confirmMessage').textContent = message;
+        const messageEl = document.getElementById('confirmMessage');
+        if (messageEl) {
+            messageEl.textContent = message;
+        }
         confirmModal.classList.add('active');
     });
 }
@@ -1035,6 +1485,9 @@ async function loadProjectData() {
     if (!currentProjectId || !getToken()) return;
     
     try {
+        // Load users first (for switcher)
+        await loadAllUsers();
+        
         await Promise.all([
             loadBranches(),
             loadHistory(),
@@ -1062,7 +1515,27 @@ async function loadProjectData() {
 /**
  * Shows project selection/creation UI
  */
-function showProjectSelection() {
+async function showProjectSelection() {
+    // Try to get Adobe Express document/project ID from SDK
+    let suggestedProjectId = null;
+    try {
+        const { runtime } = addOnUISdk.instance;
+        // Try to get document ID or project ID from Adobe Express SDK
+        // Note: This may not be available in all contexts
+        if (runtime && runtime.documentId) {
+            suggestedProjectId = `doc_${runtime.documentId}`;
+        } else if (runtime && runtime.projectId) {
+            suggestedProjectId = `proj_${runtime.projectId}`;
+        }
+    } catch (error) {
+        console.log('Could not get Adobe Express project ID:', error);
+    }
+    
+    // If no Adobe ID, generate a unique ID
+    if (!suggestedProjectId) {
+        suggestedProjectId = `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    }
+    
     // Create project selection modal
     let projectModal = document.getElementById('projectSelectionModal');
     if (!projectModal) {
@@ -1072,20 +1545,29 @@ function showProjectSelection() {
         projectModal.innerHTML = `
             <div class="modal-content" style="max-width: 500px;">
                 <div class="modal-title">Select or Create Project</div>
+                <div style="margin-bottom: 16px; padding: 12px; background: rgba(20, 115, 230, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-text);">
+                    <strong>What is a Project ID?</strong><br>
+                    A Project ID is a unique identifier for your version control project. 
+                    You can use any unique name (e.g., "my-design-project" or "proj_123"). 
+                    If you're creating a new project, we'll auto-generate one for you.
+                </div>
                 <div class="input-group">
-                    <label class="label">Project ID</label>
-                    <input type="text" id="projectIdInput" placeholder="Enter project ID (e.g., proj_123)">
+                    <label class="label">Project ID (or leave empty to auto-generate)</label>
+                    <input type="text" id="projectIdInput" placeholder="${suggestedProjectId}" value="${suggestedProjectId}">
                     <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 4px;">
-                        This should match your Adobe Express project ID
+                        💡 Tip: Use a descriptive name like "website-redesign" or "brand-guidelines"
                     </div>
                 </div>
                 <div class="input-group">
-                    <label class="label">Project Name (if creating new)</label>
+                    <label class="label">Project Name</label>
                     <input type="text" id="projectNameInput" placeholder="My Design Project">
+                    <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 4px;">
+                        This is the display name for your project
+                    </div>
                 </div>
                 <div class="input-group">
                     <label class="label">Description (optional)</label>
-                    <textarea id="projectDescInput" placeholder="Project description"></textarea>
+                    <textarea id="projectDescInput" placeholder="Brief description of your project"></textarea>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-primary" onclick="handleProjectSelection()">Continue</button>
@@ -1094,12 +1576,18 @@ function showProjectSelection() {
         `;
         document.body.appendChild(projectModal);
         
-        // Focus on input
+        // Focus on project name input
         setTimeout(() => {
-            const input = document.getElementById('projectIdInput');
-            if (input) input.focus();
+            const nameInput = document.getElementById('projectNameInput');
+            if (nameInput) nameInput.focus();
         }, 100);
     } else {
+        // Update suggested ID if modal already exists
+        const projectIdInput = document.getElementById('projectIdInput');
+        if (projectIdInput && !projectIdInput.value) {
+            projectIdInput.value = suggestedProjectId;
+            projectIdInput.placeholder = suggestedProjectId;
+        }
         projectModal.classList.add('active');
     }
 }
@@ -1108,12 +1596,19 @@ function showProjectSelection() {
  * Handles project selection or creation
  */
 async function handleProjectSelection() {
-    const projectId = document.getElementById('projectIdInput').value.trim();
+    let projectId = document.getElementById('projectIdInput').value.trim();
     const projectName = document.getElementById('projectNameInput').value.trim();
     const description = document.getElementById('projectDescInput').value.trim();
     
+    // If no project ID provided, auto-generate one
     if (!projectId) {
-        showNotification('Project ID is required', 'warning');
+        projectId = `proj_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        console.log('Auto-generated project ID:', projectId);
+    }
+    
+    // Validate project name if creating new
+    if (!projectName) {
+        showNotification('Project name is required', 'warning');
         return;
     }
     
@@ -1131,22 +1626,19 @@ async function handleProjectSelection() {
             }
         } catch (error) {
             // Project doesn't exist, create it
-            if (projectName) {
-                const createResponse = await apiCall(`/projects`, 'POST', {
-                    projectId: projectId,
-                    name: projectName,
-                    description: description
-                });
-                
-                if (createResponse.success) {
-                    currentProjectId = projectId;
-                    setCurrentProjectId(projectId);
-                    document.getElementById('projectSelectionModal').classList.remove('active');
-                    await loadProjectData();
-                    showNotification('Project created successfully', 'success');
-                }
-            } else {
-                showNotification('Project not found. Please provide a project name to create it.', 'warning');
+            const createResponse = await apiCall(`/projects`, 'POST', {
+                projectId: projectId,
+                name: projectName,
+                description: description
+            });
+            
+            if (createResponse.success) {
+                currentProjectId = projectId;
+                setCurrentProjectId(projectId);
+                document.getElementById('projectSelectionModal').classList.remove('active');
+                await loadProjectData();
+                await initializeCurrentBranch();
+                showNotification(`Project "${projectName}" created successfully!`, 'success');
             }
         }
     } catch (error) {
@@ -1178,7 +1670,15 @@ async function loadBranches() {
         const response = await apiCall(`/branches?projectId=${currentProjectId}`, 'GET');
         
         if (response.success && response.branches) {
-            renderBranches(response.branches);
+            // Filter branches by current user (for demo: show all but highlight user's branches)
+            // For hackathon demo, we show all branches but can filter if needed
+            let branchesToShow = response.branches;
+            
+            // Optional: Filter to show only current user's branches
+            // Uncomment the line below to enable filtering
+            // branchesToShow = response.branches.filter(b => b.createdBy === currentUserId);
+            
+            renderBranches(branchesToShow);
         }
     } catch (error) {
         console.error('Error loading branches:', error);
@@ -1199,24 +1699,78 @@ function renderBranches(branches) {
         branchItem.className = 'branch-item';
         branchItem.onclick = () => selectBranch(branchItem);
         
+        // Store the clean branch name in a data attribute for reliable access
+        branchItem.setAttribute('data-branch-name', branch.name);
+        branchItem.setAttribute('data-branch-id', branch._id?.toString() || branch.id);
+        
         const updatedDate = branch.updatedAt ? new Date(branch.updatedAt).toLocaleString() : 'Unknown';
         const isPrimary = branch.isPrimary || branch.name === 'main';
         
+        // Check if this is the current branch
+        const isCurrentBranch = currentBranchId === (branch._id?.toString() || branch.id);
+        
         branchItem.innerHTML = `
             <div class="branch-info">
-                <div class="branch-name">${branch.name}</div>
+                <div class="branch-name">
+                    ${branch.name}
+                    ${isCurrentBranch ? ' <span style="color: var(--color-primary); font-weight: 600;">(current)</span>' : ''}
+                </div>
                 <div class="branch-meta">📅 Updated ${updatedDate}</div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
                 ${isPrimary ? '<span class="badge badge-success">Primary</span>' : ''}
+                ${!isCurrentBranch ? `
+                    <button class="btn btn-sm btn-primary checkout-btn" data-branch-id="${branch._id || branch.id}" data-branch-name="${branch.name}" style="margin-right: 4px;">Checkout</button>
+                ` : ''}
                 ${!isPrimary ? `
                     <div class="branch-actions">
-                        <button class="btn btn-sm btn-secondary" onclick="openMergeBranchModal(event)">Merge</button>
-                        <button class="btn btn-sm btn-secondary" onclick="deleteBranch(event)">Delete</button>
+                        <button class="btn btn-sm btn-secondary merge-btn">Merge</button>
+                        ${currentUserRole === 'manager' ? `
+                            <button class="btn btn-sm btn-secondary delete-btn">Delete</button>
+                        ` : ''}
+                    </div>
+                ` : ''}
+                ${branch.createdBy ? `
+                    <div style="font-size: 10px; color: var(--color-text-secondary); margin-top: 4px;">
+                        Created by: ${allUsers.find(u => u.userId === branch.createdBy)?.name || branch.createdBy}
+                        ${branch.createdBy === currentUserId ? ' (You)' : ''}
                     </div>
                 ` : ''}
             </div>
         `;
+        
+        // Attach event listeners after innerHTML is set
+        // This ensures proper event handling and prevents conflicts with branch item onclick
+        if (!isPrimary) {
+            const mergeBtn = branchItem.querySelector('.merge-btn');
+            const deleteBtn = branchItem.querySelector('.delete-btn');
+            
+            if (mergeBtn) {
+                mergeBtn.addEventListener('click', (e) => {
+                    e.stopPropagation(); // Prevent triggering branch item onclick
+                    openMergeBranchModal(e);
+                });
+            }
+            
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation(); // Prevent triggering branch item onclick
+                    deleteBranch(e);
+                });
+            }
+        }
+        
+        if (!isCurrentBranch) {
+            const checkoutBtn = branchItem.querySelector('.checkout-btn');
+            if (checkoutBtn) {
+                checkoutBtn.addEventListener('click', (e) => {
+                    e.stopPropagation(); // Prevent triggering branch item onclick
+                    const branchId = checkoutBtn.getAttribute('data-branch-id');
+                    const branchName = checkoutBtn.getAttribute('data-branch-name');
+                    checkoutBranchById(branchId, branchName);
+                });
+            }
+        }
         
         branchList.appendChild(branchItem);
     });
@@ -1331,6 +1885,50 @@ function renderMergeRequests(mergeRequests) {
         return;
     }
     
+    // Use event delegation on the mergeList container for better reliability
+    // This avoids issues with event listeners not being attached after DOM recreation
+    if (!mergeList.hasAttribute('data-delegation-setup')) {
+        mergeList.setAttribute('data-delegation-setup', 'true');
+        
+        // Single event listener for all merge request actions using event delegation
+        mergeList.addEventListener('click', async (e) => {
+            const target = e.target;
+            
+            // Handle approve button
+            if (target.classList.contains('approve-btn') || target.closest('.approve-btn')) {
+                const btn = target.classList.contains('approve-btn') ? target : target.closest('.approve-btn');
+                e.stopPropagation();
+                e.preventDefault();
+                console.log('Approve button clicked via delegation');
+                await approveMerge(e);
+                return;
+            }
+            
+            // Handle request changes button
+            if (target.classList.contains('request-changes-btn') || target.closest('.request-changes-btn')) {
+                const btn = target.classList.contains('request-changes-btn') ? target : target.closest('.request-changes-btn');
+                e.stopPropagation();
+                e.preventDefault();
+                console.log('Request changes button clicked via delegation');
+                await requestChanges(e);
+                return;
+            }
+            
+            // Handle complete merge button
+            if (target.classList.contains('complete-merge-btn') || target.closest('.complete-merge-btn')) {
+                const btn = target.classList.contains('complete-merge-btn') ? target : target.closest('.complete-merge-btn');
+                e.stopPropagation();
+                e.preventDefault();
+                const mergeId = btn.getAttribute('data-merge-id');
+                console.log('Merge button clicked via delegation for MR #' + mergeId);
+                await completeMerge(e);
+                return;
+            }
+        });
+        
+        console.log('Event delegation set up for merge request actions');
+    }
+    
     mergeRequests.forEach(mr => {
         console.log('Rendering MR:', mr.mergeRequestId, 'Status:', mr.status, 'Reviewers:', mr.reviewers);
         const card = document.createElement('div');
@@ -1367,9 +1965,18 @@ function renderMergeRequests(mergeRequests) {
                 `;
             }
         } else if (mr.status === 'approved') {
+            // Only managers can complete merge
+            if (currentUserRole === 'manager') {
             actionButtons = `
                 <button class="btn btn-primary complete-merge-btn" data-merge-id="${mr.mergeRequestId}">Merge Now</button>
             `;
+            } else {
+                actionButtons = `
+                    <div style="padding: 8px 12px; background: rgba(20, 115, 230, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-primary);">
+                        ✓ Approved • Waiting for Manager to merge
+                    </div>
+                `;
+            }
         } else if (mr.status === 'merged') {
             actionButtons = `
                 <div style="padding: 8px 12px; background: rgba(16, 124, 16, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-success);">
@@ -1404,33 +2011,8 @@ function renderMergeRequests(mergeRequests) {
             ${actionButtons ? `<div class="btn-group">${actionButtons}</div>` : ''}
         `;
         
-        // Attach event listeners after creating the card
-        const approveBtn = card.querySelector('.approve-btn');
-        if (approveBtn) {
-            approveBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                await approveMerge(e);
-            });
-        }
-        
-        const requestChangesBtn = card.querySelector('.request-changes-btn');
-        if (requestChangesBtn) {
-            requestChangesBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                await requestChanges(e);
-            });
-        }
-        
-        const completeMergeBtn = card.querySelector('.complete-merge-btn');
-        if (completeMergeBtn) {
-            completeMergeBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                await completeMerge(e);
-            });
-        }
+        // Event listeners are handled via delegation on mergeList container
+        // This avoids issues with listeners not being attached after DOM recreation
         
         mergeList.appendChild(card);
         console.log('Card rendered for MR #' + mr.mergeRequestId);
@@ -1458,6 +2040,19 @@ async function loadTeamMembers() {
         const response = await apiCall(`/team?projectId=${currentProjectId}`, 'GET');
         
         if (response.success && response.teamMembers) {
+            // Detect current user's role
+            const currentUserMember = response.teamMembers.find(
+                member => member.userId === currentUserId
+            );
+            
+            if (currentUserMember) {
+                currentUserRole = currentUserMember.role || 'designer';
+                console.log(`Current user role: ${currentUserRole}`);
+                
+                // Apply role-based UI changes
+                applyRoleBasedUI();
+            }
+            
             renderTeamMembers(response.teamMembers);
         }
     } catch (error) {
@@ -1525,6 +2120,309 @@ function renderTeamMembers(teamMembers) {
         
         membersList.appendChild(card);
     });
+    
+    // Hide invite section for designers
+    const inviteSection = teamSection.querySelector('h3:last-of-type');
+    if (inviteSection && inviteSection.textContent.includes('Invite Member')) {
+        const inviteContainer = inviteSection.nextElementSibling;
+        if (inviteContainer && currentUserRole !== 'manager') {
+            inviteSection.style.display = 'none';
+            inviteContainer.style.display = 'none';
+            const inviteButton = inviteContainer.nextElementSibling;
+            if (inviteButton && inviteButton.tagName === 'BUTTON') {
+                inviteButton.style.display = 'none';
+            }
+        }
+    }
+}
+
+/**
+ * Applies role-based UI changes (hides/shows elements based on user role)
+ */
+function applyRoleBasedUI() {
+    const isManager = currentUserRole === 'manager';
+    
+    // 1. Hide Settings tab for designers
+    const settingsTab = document.querySelector('[data-tab="settings"]');
+    if (settingsTab) {
+        if (!isManager) {
+            settingsTab.style.display = 'none';
+            
+            // If Settings tab is currently active, switch to Branches
+            const settingsSection = document.getElementById('settings');
+            if (settingsSection && settingsSection.classList.contains('active')) {
+                switchTab('branches');
+            }
+        } else {
+            settingsTab.style.display = 'block';
+        }
+    }
+    
+    // 2. Hide invite section in team tab (handled in renderTeamMembers)
+    
+    // 3. Add role badge to header
+    const header = document.querySelector('.header');
+    if (header && !header.querySelector('.role-badge')) {
+        const roleBadge = document.createElement('div');
+        roleBadge.className = 'role-badge';
+        roleBadge.style.cssText = 'font-size: 11px; padding: 4px 8px; border-radius: 4px; font-weight: 600;';
+        roleBadge.style.background = isManager ? 'rgba(20, 115, 230, 0.1)' : 'rgba(111, 111, 111, 0.1)';
+        roleBadge.style.color = isManager ? 'var(--color-primary)' : 'var(--color-text-secondary)';
+        roleBadge.textContent = isManager ? '👑 Manager' : '🎨 Designer';
+        header.appendChild(roleBadge);
+    } else if (header) {
+        const existingBadge = header.querySelector('.role-badge');
+        if (existingBadge) {
+            existingBadge.style.background = isManager ? 'rgba(20, 115, 230, 0.1)' : 'rgba(111, 111, 111, 0.1)';
+            existingBadge.style.color = isManager ? 'var(--color-primary)' : 'var(--color-text-secondary)';
+            existingBadge.textContent = isManager ? '👑 Manager' : '🎨 Designer';
+        }
+    }
+    
+    console.log(`UI updated for role: ${currentUserRole}`);
+}
+
+/**
+ * Loads all users in the project (for user switcher)
+ */
+async function loadAllUsers() {
+    if (!currentProjectId) return;
+    
+    try {
+        const response = await apiCall(`/team/users?projectId=${currentProjectId}`, 'GET');
+        
+        if (response.success && response.users) {
+            allUsers = response.users;
+            
+            // If currentUserId is not set or not in users, set to first manager or first user
+            if (!currentUserId || !allUsers.find(u => u.userId === currentUserId)) {
+                const manager = allUsers.find(u => u.role === 'manager');
+                if (manager) {
+                    currentUserId = manager.userId;
+                    currentUserName = manager.name;
+                    currentUserRole = manager.role;
+                } else if (allUsers.length > 0) {
+                    currentUserId = allUsers[0].userId;
+                    currentUserName = allUsers[0].name;
+                    currentUserRole = allUsers[0].role;
+                }
+            } else {
+                // Update current user info
+                const currentUser = allUsers.find(u => u.userId === currentUserId);
+                if (currentUser) {
+                    currentUserName = currentUser.name;
+                    currentUserRole = currentUser.role;
+                }
+            }
+            
+            // Render user switcher
+            renderUserSwitcher();
+        }
+    } catch (error) {
+        console.error('Error loading users:', error);
+    }
+}
+
+/**
+ * Renders the user switcher dropdown
+ */
+function renderUserSwitcher() {
+    const userList = document.getElementById('userList');
+    const currentUserBadge = document.getElementById('currentUserBadge');
+    
+    if (!userList || !currentUserBadge) return;
+    
+    // Update current user badge
+    const currentUser = allUsers.find(u => u.userId === currentUserId);
+    if (currentUser) {
+        const icon = currentUser.role === 'manager' ? '👑' : '🎨';
+        currentUserBadge.textContent = `${icon} ${currentUser.name}`;
+    }
+    
+    // Render user list
+    userList.innerHTML = '';
+    
+    allUsers.forEach(user => {
+        const isCurrent = user.userId === currentUserId;
+        const icon = user.role === 'manager' ? '👑' : '🎨';
+        
+        const userItem = document.createElement('div');
+        userItem.style.cssText = `
+            padding: 8px 12px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            ${isCurrent ? 'background: rgba(20, 115, 230, 0.1); font-weight: 600;' : ''}
+        `;
+        userItem.innerHTML = `
+            <span>${icon}</span>
+            <span style="flex: 1;">${user.name}</span>
+            ${isCurrent ? '<span style="color: var(--color-primary); font-size: 10px;">(Current)</span>' : ''}
+        `;
+        
+        if (!isCurrent) {
+            userItem.addEventListener('click', () => {
+                switchUser(user.userId);
+                document.getElementById('userSwitcherDropdown').style.display = 'none';
+            });
+            
+            userItem.addEventListener('mouseenter', () => {
+                userItem.style.background = 'rgba(20, 115, 230, 0.05)';
+            });
+            
+            userItem.addEventListener('mouseleave', () => {
+                userItem.style.background = 'transparent';
+            });
+        }
+        
+        userList.appendChild(userItem);
+    });
+}
+
+/**
+ * Switches to a different user
+ */
+async function switchUser(userId) {
+    const user = allUsers.find(u => u.userId === userId);
+    if (!user) {
+        showNotification('User not found', 'error');
+        return;
+    }
+    
+    // Update current user
+    currentUserId = user.userId;
+    currentUserName = user.name;
+    currentUserRole = user.role;
+    
+    console.log(`🔄 Switched to user: ${user.name} (${user.role})`);
+    
+    // Update UI
+    applyRoleBasedUI();
+    renderUserSwitcher();
+    
+    // Reload all data for this user
+    showNotification(`Switched to ${user.name}`, 'success');
+    await loadProjectData();
+}
+
+/**
+ * Opens the "Add Designer" modal
+ */
+function openAddDesignerModal() {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('addDesignerModal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'addDesignerModal';
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-title">Add Designer</div>
+                <div class="input-group">
+                    <label class="label">Designer Name</label>
+                    <input type="text" id="designerName" placeholder="e.g., John Designer" required>
+                </div>
+                <div class="input-group">
+                    <label class="label">Email (Optional)</label>
+                    <input type="email" id="designerEmail" placeholder="designer@example.com">
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="closeModal('addDesignerModal')">Cancel</button>
+                    <button class="btn btn-primary" onclick="addDesigner()">Add Designer</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    
+    // Clear inputs
+    const nameInput = document.getElementById('designerName');
+    const emailInput = document.getElementById('designerEmail');
+    if (nameInput) nameInput.value = '';
+    if (emailInput) emailInput.value = '';
+    
+    // Show modal
+    modal.classList.add('active');
+}
+
+/**
+ * Adds a new designer
+ */
+async function addDesigner() {
+    const nameInput = document.getElementById('designerName');
+    const emailInput = document.getElementById('designerEmail');
+    
+    if (!nameInput || !nameInput.value.trim()) {
+        showNotification('Please enter a designer name', 'warning');
+        return;
+    }
+    
+    if (!currentProjectId) {
+        showNotification('No project selected', 'warning');
+        return;
+    }
+    
+    try {
+        const response = await apiCall(`/team/add-designer?projectId=${currentProjectId}`, 'POST', {
+            name: nameInput.value.trim(),
+            email: emailInput.value.trim() || undefined,
+        });
+        
+        if (response.success) {
+            showNotification(`Designer "${nameInput.value}" added successfully!`, 'success');
+            closeModal('addDesignerModal');
+            
+            // Reload users and team members
+            await loadAllUsers();
+            await loadTeamMembers();
+        }
+    } catch (error) {
+        console.error('Error adding designer:', error);
+        showNotification(`Failed to add designer: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Handles invitation acceptance from URL parameters
+ */
+async function handleInvitationAcceptance(token, projectId) {
+    try {
+        showNotification('Accepting invitation...', 'info');
+        
+        // Call backend to accept invitation
+        const response = await apiCall('/team/accept-invite', 'POST', {
+            token: token
+        });
+        
+        if (response.success) {
+            // Set project ID and reload
+            currentProjectId = projectId || response.projectId;
+            localStorage.setItem('currentProjectId', currentProjectId);
+            
+            // Clear URL parameters
+            window.history.replaceState({}, document.title, window.location.pathname);
+            
+            showNotification('Invitation accepted! Welcome to the project.', 'success');
+            
+            // Load project data
+            await loadProjectData();
+            await initializeCurrentBranch();
+            
+            // Switch to Branches tab
+            switchTab('branches');
+        }
+    } catch (error) {
+        console.error('Error accepting invitation:', error);
+        showNotification(`Failed to accept invitation: ${error.message}`, 'error');
+        
+        // Show project selection if invitation failed
+        setTimeout(() => {
+            showProjectSelection();
+        }, 2000);
+    }
 }
 
 // ============================================
@@ -1541,6 +2439,7 @@ window.updateBranchPrefix = updateBranchPrefix;
 window.submitMergeRequest = submitMergeRequest;
 window.approveMerge = approveMerge;
 window.requestChanges = requestChanges;
+window.addDesigner = addDesigner;
 window.completeMerge = completeMerge;
 window.filterMerge = filterMerge;
 window.inviteMember = inviteMember;
@@ -1548,6 +2447,7 @@ window.handleProjectSelection = handleProjectSelection;
 window.submitCommit = submitCommit;
 window.createCommit = createCommit;
 window.saveProjectSettings = saveProjectSettings;
+window.checkoutBranchById = checkoutBranch;
 
 /**
  * Loads project settings from backend
