@@ -12,7 +12,7 @@ const TeamMember = require('../models/TeamMember');
 const User = require('../models/User');
 const { AppError } = require('../middleware/errorHandler');
 const { generateCommitHash } = require('../utils/commitHash');
-const { getCurrentSnapshot, saveCurrentSnapshot, saveFile, copyCurrentSnapshot } = require('../services/storage/fileStorage');
+const { getCurrentSnapshot, saveCurrentSnapshot, saveFile, copyCurrentSnapshot, getCommitSnapshot } = require('../services/storage/fileStorage');
 const { v4: uuidv4 } = require('uuid');
 const {
   emitMergeRequestCreated,
@@ -24,6 +24,7 @@ const {
 const {
   sendMergeRequestNotification,
   sendMergeRequestApprovalNotification,
+  sendMergeRequestChangesRequestedNotification,
 } = require('../services/email/emailService');
 
 /**
@@ -276,6 +277,11 @@ const approveMergeRequest = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Merge request not found', 404);
     }
 
+    // Prevent self-approval: Creator cannot approve their own merge request
+    if (mergeRequest.createdBy === userId) {
+      throw new AppError('FORBIDDEN', 'You cannot approve your own merge request', 403);
+    }
+
     // Check if user is a manager (managers can always approve)
     const teamMember = await TeamMember.findOne({
       projectId,
@@ -360,6 +366,11 @@ const requestChanges = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Merge request not found', 404);
     }
 
+    // Prevent self-request-changes: Creator cannot request changes on their own merge request
+    if (mergeRequest.createdBy === userId) {
+      throw new AppError('FORBIDDEN', 'You cannot request changes on your own merge request', 403);
+    }
+
     // Check if user is a manager (managers can always request changes)
     const teamMember = await TeamMember.findOne({
       projectId,
@@ -389,12 +400,29 @@ const requestChanges = async (req, res, next) => {
     reviewer.reviewedAt = new Date();
     reviewer.comment = comment || null;
 
-    // If was approved, change back to open
-    if (mergeRequest.status === 'approved') {
-      mergeRequest.status = 'open';
-    }
+    // Status stays as 'open' (no approval status in simplified flow)
 
     await mergeRequest.save();
+
+    // Send email notification to merge request creator
+    try {
+      const project = await Project.findOne({ projectId });
+      const requester = await User.findOne({ userId: mergeRequest.createdBy });
+      const reviewerUser = await User.findOne({ userId });
+      
+      if (requester && reviewerUser) {
+        await sendMergeRequestChangesRequestedNotification(
+          requester.email,
+          project?.name || 'Project',
+          mergeRequest.title,
+          reviewerUser.name || 'Reviewer',
+          comment || 'No feedback provided.'
+        );
+      }
+    } catch (error) {
+      console.error('Failed to send changes requested email:', error);
+      // Don't fail the request if email fails
+    }
 
     // Emit WebSocket event
     emitMergeRequestClosed(projectId, mergeRequest);
@@ -425,8 +453,10 @@ const completeMerge = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Merge request not found', 404);
     }
 
-    if (mergeRequest.status !== 'approved') {
-      throw new AppError('VALIDATION_ERROR', 'Merge request must be approved before merging', 400);
+    // Allow merging from 'open' status (no approval needed in simplified flow - manager decides directly)
+    // Reject if status is 'merged', 'closed', 'rejected', or 'reverted'
+    if (!['open', 'approved'].includes(mergeRequest.status)) {
+      throw new AppError('VALIDATION_ERROR', `Merge request is ${mergeRequest.status} and cannot be merged`, 400);
     }
 
     // Get source and target branches
@@ -450,12 +480,13 @@ const completeMerge = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Target branch not found or inactive', 404);
     }
 
-    // Check branch protection (if target is main)
+    // Branch protection check (for future use)
+    // In simplified flow, managers can merge directly without approval requirement
+    // This check is kept for potential future branch protection features
     if (targetBranch.isPrimary) {
       const project = await Project.findOne({ projectId });
-      if (project?.settings?.branchProtection?.requireApproval) {
-        // Already checked above (status must be approved)
-      }
+      // Note: In simplified flow, no approval requirement check needed
+      // Managers can merge directly from 'open' status
     }
 
     // Perform actual merge: Replace target branch content with source branch content
@@ -603,6 +634,157 @@ const completeMerge = async (req, res, next) => {
   }
 };
 
+/**
+ * Revert a merge (undo a merge)
+ */
+const revertMerge = async (req, res, next) => {
+  try {
+    const { projectId, mergeRequestId } = req.params;
+    const userId = req.userId;
+
+    const mergeRequest = await MergeRequest.findOne({
+      projectId,
+      mergeRequestId: parseInt(mergeRequestId),
+    });
+
+    if (!mergeRequest) {
+      throw new AppError('NOT_FOUND', 'Merge request not found', 404);
+    }
+
+    if (mergeRequest.status !== 'merged') {
+      throw new AppError('VALIDATION_ERROR', 'Can only revert merged requests', 400);
+    }
+
+    // Get target branch
+    const targetBranch = await Branch.findOne({
+      projectId,
+      name: mergeRequest.targetBranch,
+      status: 'active',
+    });
+
+    if (!targetBranch) {
+      throw new AppError('NOT_FOUND', 'Target branch not found', 404);
+    }
+
+    // Find the commit before the merge
+    // The merge commit message should contain "Merge" keyword
+    const mergeCommits = await Commit.find({
+      projectId,
+      branchId: targetBranch._id,
+      message: { $regex: /^Merge .* into/ },
+    }).sort({ timestamp: -1 });
+
+    // Find the merge commit for this specific merge request
+    const mergeCommit = mergeCommits.find(c => 
+      c.message.includes(mergeRequest.sourceBranch) && 
+      c.message.includes(mergeRequest.targetBranch)
+    );
+
+    if (!mergeCommit) {
+      throw new AppError('NOT_FOUND', 'Merge commit not found', 404);
+    }
+
+    // Get the parent commit (state before merge)
+    const parentCommit = await Commit.findOne({
+      projectId,
+      branchId: targetBranch._id,
+      hash: mergeCommit.parentCommitHash,
+    });
+
+    if (!parentCommit) {
+      throw new AppError('NOT_FOUND', 'Parent commit (pre-merge state) not found', 404);
+    }
+
+    // Get parent commit snapshot
+    let parentSnapshot;
+    try {
+      parentSnapshot = await getCommitSnapshot(projectId, targetBranch._id.toString(), parentCommit.hash);
+    } catch (error) {
+      throw new AppError('NOT_FOUND', 'Parent commit snapshot not found', 404);
+    }
+
+    // Replace current branch snapshot with parent snapshot
+    await saveCurrentSnapshot(parentSnapshot, projectId, targetBranch._id.toString());
+
+    // Create revert commit
+    const parentHash = targetBranch.lastCommit?.hash || null;
+    const revertMessage = `Reverted merge #${mergeRequestId}: ${mergeRequest.title}`;
+    const revertCommitHash = generateCommitHash(
+      projectId,
+      targetBranch._id.toString(),
+      revertMessage,
+      userId,
+      parentHash
+    );
+
+    // Save revert commit snapshot file
+    const revertCommitFilePath = await saveFile(
+      parentSnapshot,
+      projectId,
+      targetBranch._id.toString(),
+      revertCommitHash,
+      'json'
+    );
+
+    // Count elements for commit metadata
+    const parentData = JSON.parse(parentSnapshot.toString());
+    const elementCount = parentData?.pages?.[0]?.artboards?.[0]?.elements?.length || 0;
+
+    // Create revert commit record
+    const revertCommit = await Commit.create({
+      projectId,
+      branchId: targetBranch._id,
+      hash: revertCommitHash,
+      message: revertMessage,
+      authorId: userId,
+      parentCommitHash: parentHash,
+      changes: {
+        filesAdded: 0,
+        filesModified: 1,
+        filesDeleted: 0,
+        componentsUpdated: elementCount,
+      },
+      snapshot: {
+        fileUrl: revertCommitFilePath,
+        thumbnailUrl: null,
+      },
+    });
+
+    // Update branch last commit
+    targetBranch.lastCommit = {
+      hash: revertCommit.hash,
+      message: revertCommit.message,
+      timestamp: revertCommit.timestamp,
+      authorId: revertCommit.authorId,
+    };
+    targetBranch.updatedAt = new Date();
+    await targetBranch.save();
+
+    // Update merge request status
+    mergeRequest.status = 'reverted';
+    mergeRequest.revertedAt = new Date();
+    mergeRequest.revertedBy = userId;
+    await mergeRequest.save();
+
+    // Emit WebSocket events
+    emitBranchUpdated(projectId, targetBranch);
+    emitMergeRequestClosed(projectId, mergeRequest);
+
+    res.json({
+      success: true,
+      message: 'Merge reverted successfully',
+      commit: revertCommit,
+      mergeRequest: mergeRequest,
+      targetBranch: {
+        id: targetBranch._id.toString(),
+        name: targetBranch.name,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getMergeRequests,
   getMergeRequest,
@@ -610,4 +792,5 @@ module.exports = {
   approveMergeRequest,
   requestChanges,
   completeMerge,
+  revertMerge,
 };

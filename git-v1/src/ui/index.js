@@ -1098,6 +1098,70 @@ async function completeMerge(btnOrEvent) {
     }
 
     try {
+        // STEP 1: Get merge request details to find source branch
+        console.log('Getting merge request details...');
+        const mrDetailsResponse = await apiCall(`/merge-requests/${mergeRequestId}?projectId=${currentProjectId}`, 'GET');
+        
+        if (!mrDetailsResponse.success || !mrDetailsResponse.mergeRequest) {
+            throw new Error('Failed to fetch merge request details');
+        }
+        
+        const mergeRequest = mrDetailsResponse.mergeRequest;
+        const sourceBranchName = mergeRequest.sourceBranch;
+        const targetBranchName = mergeRequest.targetBranch;
+        
+        console.log('Merge request details:', {
+            sourceBranch: sourceBranchName,
+            targetBranch: targetBranchName,
+            currentBranchId: currentBranchId
+        });
+        
+        // STEP 2: Check if user is on source branch and save current state if needed
+        if (sandboxProxy && currentBranchId) {
+            // Get all branches to find source branch ID
+            const branchesResponse = await apiCall(`/branches?projectId=${currentProjectId}`, 'GET');
+            
+            if (branchesResponse.success && branchesResponse.branches) {
+                // Find source branch by name
+                const sourceBranch = branchesResponse.branches.find(b => b.name === sourceBranchName);
+                const sourceBranchId = sourceBranch?._id?.toString() || sourceBranch?.id;
+                
+                // Check if user is currently on the source branch
+                if (sourceBranchId && (currentBranchId === sourceBranchId || currentBranchId.toString() === sourceBranchId)) {
+                    console.log(`User is on source branch "${sourceBranchName}", saving current document state before merge...`);
+                    showNotification('Saving current changes before merge...', 'info');
+                    
+                    try {
+                        // Export current document state
+                        const currentSnapshot = await sandboxProxy.exportDocument();
+                        
+                        // Save to source branch
+                        const saveResponse = await apiCall(
+                            `/branches/${sourceBranchId}/snapshot?projectId=${currentProjectId}`,
+                            'POST',
+                            {
+                                snapshot: currentSnapshot
+                            }
+                        );
+                        
+                        if (saveResponse.success) {
+                            console.log('✅ Successfully saved current document state to source branch before merge');
+                            showNotification('Changes saved. Proceeding with merge...', 'success');
+                        } else {
+                            console.warn('Warning: Failed to save current state, but proceeding with merge');
+                        }
+                    } catch (saveError) {
+                        console.error('Error saving current document state before merge:', saveError);
+                        // Don't fail the merge - just warn the user
+                        showNotification('Warning: Could not save current changes. Merge will use last saved state.', 'warning');
+                    }
+                } else {
+                    console.log(`User is not on source branch (current: ${currentBranchId}, source: ${sourceBranchId}), skipping save`);
+                }
+            }
+        }
+        
+        // STEP 3: Proceed with merge
         console.log('Calling merge API:', `/merge-requests/${mergeRequestId}/merge?projectId=${currentProjectId}`);
         const response = await apiCall(`/merge-requests/${mergeRequestId}/merge?projectId=${currentProjectId}`, 'POST');
         console.log('Merge API response:', response);
@@ -1730,9 +1794,14 @@ function renderBranches(branches) {
                         ` : ''}
                     </div>
                 ` : ''}
-                ${branch.createdBy ? `
+                ${branch.createdBy && branch.createdByUser ? `
                     <div style="font-size: 10px; color: var(--color-text-secondary); margin-top: 4px;">
-                        Created by: ${allUsers.find(u => u.userId === branch.createdBy)?.name || branch.createdBy}
+                        Created by: ${branch.createdByUser.name || 'Unknown User'}
+                        ${branch.createdBy === currentUserId ? ' (You)' : ''}
+                    </div>
+                ` : branch.createdBy ? `
+                    <div style="font-size: 10px; color: var(--color-text-secondary); margin-top: 4px;">
+                        Created by: Unknown User
                         ${branch.createdBy === currentUserId ? ' (You)' : ''}
                     </div>
                 ` : ''}
@@ -1821,11 +1890,35 @@ function renderHistory(commits) {
         const date = new Date(commit.timestamp).toLocaleString();
         const authorName = commit.author?.name || 'Unknown';
         
+        // Only show revert button for managers, and not for the most recent commit (current state)
+        const canRevert = currentUserRole === 'manager' && index > 0;
+        
         historyItem.innerHTML = `
             <div class="history-timestamp">${date}</div>
-            <div class="history-message"><strong>${commit.hash}</strong> - ${commit.message}</div>
+            <div class="history-message"><strong>${commit.hash.substring(0, 7)}</strong> - ${commit.message}</div>
             <div class="history-author">${authorName}</div>
+            ${canRevert ? `
+                <button class="btn btn-sm btn-secondary revert-commit-btn" 
+                        data-commit-hash="${commit.hash}" 
+                        data-branch-id="${commit.branchId}" 
+                        style="margin-top: 8px;">
+                    ↶ Revert to this commit
+                </button>
+            ` : ''}
         `;
+        
+        // Add event listener for revert button
+        if (canRevert) {
+            const revertBtn = historyItem.querySelector('.revert-commit-btn');
+            if (revertBtn) {
+                revertBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    // Convert branchId to string if it's an ObjectId
+                    const branchIdStr = commit.branchId?._id?.toString() || commit.branchId?.toString() || commit.branchId;
+                    revertToCommit(commit.hash, branchIdStr, commit.message);
+                });
+            }
+        }
         
         historyContainer.appendChild(historyItem);
     });
@@ -1894,16 +1987,6 @@ function renderMergeRequests(mergeRequests) {
         mergeList.addEventListener('click', async (e) => {
             const target = e.target;
             
-            // Handle approve button
-            if (target.classList.contains('approve-btn') || target.closest('.approve-btn')) {
-                const btn = target.classList.contains('approve-btn') ? target : target.closest('.approve-btn');
-                e.stopPropagation();
-                e.preventDefault();
-                console.log('Approve button clicked via delegation');
-                await approveMerge(e);
-                return;
-            }
-            
             // Handle request changes button
             if (target.classList.contains('request-changes-btn') || target.closest('.request-changes-btn')) {
                 const btn = target.classList.contains('request-changes-btn') ? target : target.closest('.request-changes-btn');
@@ -1935,52 +2018,128 @@ function renderMergeRequests(mergeRequests) {
         card.className = 'card';
         card.setAttribute('data-merge-id', mr.mergeRequestId);
         
-        const statusBadge = getStatusBadge(mr.status);
+        const statusBadge = getStatusBadge(mr.status, mr.reviewers);
         const date = new Date(mr.createdAt).toLocaleString();
         const creatorName = mr.createdByUser?.name || 'Unknown';
         
-        // Check if current user has already approved
-        const currentUserApproved = mr.reviewers?.some(r => 
-            r.userId === currentUserId && r.status === 'approved'
-        ) || false;
+        // Count requested changes
+        const requestedChangesCount = mr.reviewers?.filter(r => r.status === 'requested_changes').length || 0;
         
-        // Count approvals
-        const approvedCount = mr.reviewers?.filter(r => r.status === 'approved').length || 0;
-        const totalReviewers = mr.reviewers?.length || 0;
+        // Get reviewers who requested changes with their comments
+        const requestedChangesReviewers = mr.reviewers?.filter(r => r.status === 'requested_changes') || [];
         
-        let actionButtons = '';
-        if (mr.status === 'open') {
-            if (currentUserApproved) {
-                // User has already approved, show waiting message
-                actionButtons = `
-                    <div style="padding: 8px 12px; background: rgba(20, 115, 230, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-primary);">
-                        ✓ You approved • Waiting for ${totalReviewers - approvedCount} more approval(s)
+        // Build reviewer history/activity timeline (only show requested_changes and rejected - no approvals)
+        let reviewerHistory = '';
+        if (mr.reviewers && mr.reviewers.length > 0) {
+            // Filter to only show meaningful actions (requested_changes, rejected) - no pending/approved
+            const activeReviewers = mr.reviewers.filter(r => 
+                r.status === 'requested_changes' || r.status === 'rejected'
+            );
+            
+            if (activeReviewers.length > 0) {
+                const sortedReviewers = [...activeReviewers].sort((a, b) => {
+                    const dateA = a.reviewedAt ? new Date(a.reviewedAt) : new Date(0);
+                    const dateB = b.reviewedAt ? new Date(b.reviewedAt) : new Date(0);
+                    return dateB - dateA;
+                });
+                
+                reviewerHistory = '<div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--color-border);">';
+                reviewerHistory += '<div style="font-size: 12px; font-weight: 600; color: var(--color-text); margin-bottom: 12px;">Review Activity:</div>';
+                
+                sortedReviewers.forEach(reviewer => {
+                    const reviewerName = reviewer.user?.name || reviewer.userId || 'Unknown Reviewer';
+                    const reviewedDate = reviewer.reviewedAt ? new Date(reviewer.reviewedAt).toLocaleString() : 'Unknown';
+                    
+                    if (reviewer.status === 'requested_changes') {
+                        reviewerHistory += `
+                            <div style="padding: 8px 12px; background: rgba(255, 140, 0, 0.05); border-left: 3px solid var(--color-warning); border-radius: 4px; margin-bottom: 8px;">
+                                <div style="font-size: 12px; font-weight: 600; color: var(--color-warning); margin-bottom: 4px;">
+                                    ⚠ Changes Requested by ${reviewerName}
+                                </div>
+                                ${reviewer.comment ? `
+                                    <div style="font-size: 11px; color: var(--color-text); margin-top: 6px; padding: 8px; background: rgba(0, 0, 0, 0.03); border-radius: 3px; font-style: italic;">
+                                        "${reviewer.comment}"
+                                    </div>
+                                ` : ''}
+                                <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 4px;">${reviewedDate}</div>
                     </div>
                 `;
-            } else {
-                // User can still approve
-                actionButtons = `
-                    <button class="btn btn-primary approve-btn" data-merge-id="${mr.mergeRequestId}">✓ Approve</button>
-                    <button class="btn btn-secondary request-changes-btn" data-merge-id="${mr.mergeRequestId}">Request Changes</button>
-                `;
+                    } else if (reviewer.status === 'rejected') {
+                        reviewerHistory += `
+                            <div style="padding: 8px 12px; background: rgba(220, 38, 38, 0.05); border-left: 3px solid var(--color-danger); border-radius: 4px; margin-bottom: 8px;">
+                                <div style="font-size: 12px; font-weight: 600; color: var(--color-danger); margin-bottom: 4px;">
+                                    ✗ Rejected by ${reviewerName}
+                                </div>
+                                ${reviewer.comment ? `
+                                    <div style="font-size: 11px; color: var(--color-text); margin-top: 6px; padding: 8px; background: rgba(0, 0, 0, 0.03); border-radius: 3px; font-style: italic;">
+                                        "${reviewer.comment}"
+                                    </div>
+                                ` : ''}
+                                <div style="font-size: 11px; color: var(--color-text-secondary); margin-top: 4px;">${reviewedDate}</div>
+                            </div>
+                        `;
+                    }
+                });
+                
+                reviewerHistory += '</div>';
             }
-        } else if (mr.status === 'approved') {
-            // Only managers can complete merge
-            if (currentUserRole === 'manager') {
+        }
+        
+        // Show changes requested warning if any reviewer requested changes
+        let changesRequestedAlert = '';
+        if (requestedChangesCount > 0) {
+            changesRequestedAlert = `
+                <div style="padding: 12px; background: rgba(255, 140, 0, 0.1); border: 1px solid rgba(255, 140, 0, 0.3); border-radius: 6px; margin-bottom: 16px;">
+                    <div style="font-size: 13px; font-weight: 600; color: var(--color-warning); margin-bottom: 8px;">
+                        ⚠ ${requestedChangesCount} Reviewer${requestedChangesCount > 1 ? 's' : ''} Requested Changes
+                    </div>
+                    <div style="font-size: 12px; color: var(--color-text);">
+                        ${requestedChangesReviewers.map(r => {
+                            const name = r.user?.name || r.userId || 'Unknown';
+                            const comment = r.comment ? `: "${r.comment}"` : '';
+                            return `<div style="margin-top: 4px;">• ${name}${comment}</div>`;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Only managers can take action on merge requests
+        let actionButtons = '';
+        if (mr.status === 'open' && currentUserRole === 'manager') {
+            // Manager can merge or request changes
             actionButtons = `
                 <button class="btn btn-primary complete-merge-btn" data-merge-id="${mr.mergeRequestId}">Merge Now</button>
+                <button class="btn btn-secondary request-changes-btn" data-merge-id="${mr.mergeRequestId}">Request Changes</button>
             `;
-            } else {
-                actionButtons = `
-                    <div style="padding: 8px 12px; background: rgba(20, 115, 230, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-primary);">
-                        ✓ Approved • Waiting for Manager to merge
-                    </div>
-                `;
-            }
+        } else if (mr.status === 'open' && currentUserRole !== 'manager') {
+            // Non-managers can only view (designers)
+            const isCreator = mr.createdBy === currentUserId;
+            actionButtons = `
+                <div style="padding: 8px 12px; background: rgba(128, 128, 128, 0.1); border-radius: 4px; font-size: 12px; color: var(--color-text-secondary); border-left: 3px solid var(--color-border);">
+                    ${isCreator ? '📝 Created by you • ' : ''}Waiting for Manager to review
+                </div>
+            `;
         } else if (mr.status === 'merged') {
+            // Only managers can revert merges
+            if (currentUserRole === 'manager') {
+                actionButtons = `
+                    <div style="padding: 8px 12px; background: rgba(16, 124, 16, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-success); margin-bottom: 8px;">
+                        ✓ Merged by ${mr.mergedBy || 'User'} on ${new Date(mr.mergedAt).toLocaleDateString()}
+                    </div>
+                    <button class="btn btn-secondary revert-merge-btn" data-merge-id="${mr.mergeRequestId}">↶ Revert Merge</button>
+                `;
+            } else {
             actionButtons = `
                 <div style="padding: 8px 12px; background: rgba(16, 124, 16, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-success);">
                     ✓ Merged by ${mr.mergedBy || 'User'} on ${new Date(mr.mergedAt).toLocaleDateString()}
+                    </div>
+                `;
+            }
+        } else if (mr.status === 'reverted') {
+            actionButtons = `
+                <div style="padding: 8px 12px; background: rgba(255, 140, 0, 0.05); border-radius: 4px; font-size: 12px; color: var(--color-warning);">
+                    ↶ Reverted by ${mr.revertedBy || 'User'} on ${mr.revertedAt ? new Date(mr.revertedAt).toLocaleDateString() : 'Unknown'}
                 </div>
             `;
         }
@@ -1998,6 +2157,7 @@ function renderMergeRequests(mergeRequests) {
             <div style="font-size: 13px; margin-bottom: 12px; color: var(--color-text-secondary);">
                 ${mr.title}
             </div>
+            ${changesRequestedAlert}
             <div class="stat-grid">
                 <div class="stat-card">
                     <div class="stat-value">${mr.stats?.filesChanged || 0}</div>
@@ -2008,7 +2168,8 @@ function renderMergeRequests(mergeRequests) {
                     <div class="stat-label">Components Updated</div>
                 </div>
             </div>
-            ${actionButtons ? `<div class="btn-group">${actionButtons}</div>` : ''}
+            ${reviewerHistory}
+            ${actionButtons ? `<div class="btn-group" style="margin-top: 16px;">${actionButtons}</div>` : ''}
         `;
         
         // Event listeners are handled via delegation on mergeList container
@@ -2019,15 +2180,164 @@ function renderMergeRequests(mergeRequests) {
     });
 }
 
-function getStatusBadge(status) {
+function getStatusBadge(status, reviewers) {
+    // Check if there are requested changes (even if status is 'open')
+    const hasRequestedChanges = reviewers && reviewers.some(r => r.status === 'requested_changes');
+    
     const badges = {
-        'open': '<span class="badge badge-info">Pending Review</span>',
-        'approved': '<span class="badge badge-success">Approved</span>',
+        'open': hasRequestedChanges 
+            ? '<span class="badge badge-warning">Changes Requested</span>' 
+            : '<span class="badge badge-info">Pending Review</span>',
         'merged': '<span class="badge badge-success">Merged</span>',
         'closed': '<span class="badge badge-warning">Closed</span>',
         'rejected': '<span class="badge badge-danger">Rejected</span>',
+        'reverted': '<span class="badge badge-warning">Reverted</span>',
     };
     return badges[status] || '<span class="badge badge-info">Unknown</span>';
+}
+
+/**
+ * Revert branch to a specific commit
+ */
+async function revertToCommit(commitHash, branchId, commitMessage) {
+    if (!currentProjectId) {
+        showNotification('No project selected', 'warning');
+        return;
+    }
+    
+    if (!sandboxProxy) {
+        showNotification('Sandbox not initialized. Please refresh the page.', 'error');
+        return;
+    }
+    
+    // Ensure branchId is a string
+    const branchIdStr = branchId?.toString() || branchId;
+    
+    if (!branchIdStr) {
+        showNotification('Invalid branch ID', 'error');
+        return;
+    }
+    
+    // Check if user is on the branch being reverted
+    const isOnBranch = currentBranchId === branchIdStr || currentBranchId?.toString() === branchIdStr;
+    
+    const confirmed = await showConfirmation(
+        `Are you sure you want to revert to this commit?\n\n"${commitMessage}"\n\nThis will restore the branch to this commit's state.${isOnBranch ? '\n\nThe document will be reloaded with this commit\'s content.' : '\n\nYou may need to checkout this branch to see the changes.'}`
+    );
+    
+    if (!confirmed) {
+        return;
+    }
+    
+    try {
+        showNotification('Reverting to commit...', 'info');
+        
+        console.log('Calling revert API:', `/commits/${branchIdStr}/revert/${commitHash}?projectId=${currentProjectId}`);
+        
+        const response = await apiCall(
+            `/commits/${branchIdStr}/revert/${commitHash}?projectId=${currentProjectId}`,
+            'POST'
+        );
+        
+        if (response.success) {
+            showNotification('Branch reverted successfully!', 'success');
+            
+            // If user is on this branch, reload document
+            if (isOnBranch && sandboxProxy) {
+                try {
+                    // Get the reverted snapshot
+                    const snapshotResponse = await apiCall(`/branches/${branchIdStr}/snapshot?projectId=${currentProjectId}`, 'GET');
+                    
+                    if (snapshotResponse.success && snapshotResponse.snapshot) {
+                        await sandboxProxy.importDocument(snapshotResponse.snapshot);
+                        console.log('✅ Document reloaded with reverted content');
+                        showNotification('Document updated with reverted content.', 'success');
+                    }
+                } catch (error) {
+                    console.error('Error reloading document after revert:', error);
+                    showNotification('Reverted! Please checkout this branch to see changes.', 'warning');
+                }
+            }
+            
+            // Reload history and branches
+            await loadHistory();
+            await loadBranches();
+        } else {
+            throw new Error(response.message || response.error?.message || 'Revert failed');
+        }
+    } catch (error) {
+        console.error('Error reverting to commit:', error);
+        showNotification(`Failed to revert: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Revert a merge (undo a merge)
+ */
+async function revertMerge(mergeRequestId) {
+    if (!currentProjectId) {
+        showNotification('No project selected', 'warning');
+        return;
+    }
+    
+    if (!sandboxProxy) {
+        showNotification('Sandbox not initialized. Please refresh the page.', 'error');
+        return;
+    }
+    
+    const confirmed = await showConfirmation(
+        'Are you sure you want to revert this merge?\n\nThis will undo the merge and restore the branch to its state before the merge.\n\nThe document will be reloaded if you are on the target branch.'
+    );
+    
+    if (!confirmed) {
+        return;
+    }
+    
+    try {
+        showNotification('Reverting merge...', 'info');
+        
+        const response = await apiCall(
+            `/merge-requests/${mergeRequestId}/revert?projectId=${currentProjectId}`,
+            'POST'
+        );
+        
+        if (response.success) {
+            const targetBranchId = response.targetBranch?.id;
+            const targetBranchName = response.targetBranch?.name;
+            const isOnTargetBranch = currentBranchId === targetBranchId;
+            
+            showNotification('Merge reverted successfully!', 'success');
+            
+            // If user is on target branch, reload document
+            if (isOnTargetBranch && sandboxProxy) {
+                try {
+                    // Get the reverted snapshot
+                    const snapshotResponse = await apiCall(`/branches/${targetBranchId}/snapshot?projectId=${currentProjectId}`, 'GET');
+                    
+                    if (snapshotResponse.success && snapshotResponse.snapshot) {
+                        await sandboxProxy.importDocument(snapshotResponse.snapshot);
+                        console.log('✅ Document reloaded with reverted merge content');
+                        showNotification('Document updated with reverted merge content.', 'success');
+                    }
+                } catch (error) {
+                    console.error('Error reloading document after revert:', error);
+                    showNotification(`Reverted! Checkout to "${targetBranchName}" to see changes.`, 'warning');
+                }
+            } else {
+                showNotification(`Merge reverted! Checkout to "${targetBranchName}" to see changes.`, 'success');
+            }
+            
+            // Reload merge requests, history, and branches
+            await loadMergeRequests('all');
+            await loadHistory();
+            await loadBranches();
+        } else {
+            throw new Error(response.message || response.error?.message || 'Revert failed');
+        }
+    } catch (error) {
+        console.error('Error reverting merge:', error);
+        showNotification(`Failed to revert merge: ${error.message}`, 'error');
+    }
 }
 
 /**
@@ -2292,6 +2602,38 @@ async function switchUser(userId) {
         return;
     }
     
+    try {
+        const response = await fetch(`${AUTH_API_URL}/login`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                adobeToken: 'mock-token-switch',
+                userId: user.userId,
+                email: user.email,
+                name: user.name,
+                avatarUrl: user.avatarUrl || null,
+            }),
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Login failed: ${response.status} ${errorText}`);
+        }
+
+        const data = await response.json();
+        if (data.success && data.token) {
+            setToken(data.token);
+        } else {
+            throw new Error('Login response missing token');
+        }
+    } catch (error) {
+        console.error('Failed to switch user:', error);
+        showNotification(`Failed to switch user: ${error.message}`, 'error');
+        return;
+    }
+
     // Update current user
     currentUserId = user.userId;
     currentUserName = user.name;
@@ -2440,6 +2782,8 @@ window.submitMergeRequest = submitMergeRequest;
 window.approveMerge = approveMerge;
 window.requestChanges = requestChanges;
 window.addDesigner = addDesigner;
+window.revertToCommit = revertToCommit;
+window.revertMerge = revertMerge;
 window.completeMerge = completeMerge;
 window.filterMerge = filterMerge;
 window.inviteMember = inviteMember;

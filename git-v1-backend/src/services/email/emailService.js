@@ -255,8 +255,43 @@ If you didn't request this invitation, you can safely ignore this email.
   return emailService.sendEmail(to, subject, html, text);
 };
 
+/**
+ * Send merge request changes requested notification
+ * @param {String} to - Recipient email
+ * @param {String} projectName - Project name
+ * @param {String} mergeRequestTitle - Merge request title
+ * @param {String} reviewerName - Name of reviewer who requested changes
+ * @param {String} feedback - Feedback comment
+ */
+const sendMergeRequestChangesRequestedNotification = async (to, projectName, mergeRequestTitle, reviewerName, feedback) => {
+  const subject = `Changes Requested: ${mergeRequestTitle}`;
+  const text = `
+Changes have been requested on your merge request in ${projectName}.
+
+Title: ${mergeRequestTitle}
+Reviewer: ${reviewerName}
+${feedback ? `Feedback: ${feedback}` : 'No feedback provided.'}
+
+Please address the requested changes and update your merge request.
+  `;
+  const html = `
+    <h2>Changes Requested</h2>
+    <p>Changes have been requested on your merge request in <strong>${projectName}</strong>.</p>
+    <p><strong>Title:</strong> ${mergeRequestTitle}</p>
+    <p><strong>Reviewer:</strong> ${reviewerName}</p>
+    ${feedback ? `<div style="background: #FFF3CD; border-left: 4px solid #FFC107; padding: 12px; margin: 16px 0; border-radius: 4px;">
+      <strong>Feedback:</strong>
+      <p style="margin: 8px 0 0 0; color: #856404;">${feedback}</p>
+    </div>` : '<p><em>No feedback provided.</em></p>'}
+    <p>Please address the requested changes and update your merge request.</p>
+  `;
+
+  return emailService.sendEmail(to, subject, html, text);
+};
+
 module.exports = {
   sendMergeRequestNotification,
   sendMergeRequestApprovalNotification,
+  sendMergeRequestChangesRequestedNotification,
   sendTeamInvitation,
 };

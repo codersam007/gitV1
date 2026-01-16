@@ -14,10 +14,17 @@ const {
   getBranchSnapshot,
   saveBranchSnapshot,
   checkoutBranch,
+  debugBranchCreators,
 } = require('../controllers/branchController');
 const { authenticate } = require('../middleware/auth');
 const { checkProjectAccess, checkManager } = require('../middleware/authorization');
 const { validateCreateBranch } = require('../utils/validators');
+
+// GET /api/v1/branches/debug?projectId=:projectId - Debug branch creator data (temporary endpoint)
+router.get('/debug', authenticate, (req, res, next) => {
+  req.params.projectId = req.query.projectId;
+  next();
+}, checkProjectAccess, debugBranchCreators);
 
 // GET /api/v1/branches?projectId=:projectId - Get all branches
 // Note: projectId comes from query params, so we need to add it to req.params for middleware

@@ -7,6 +7,8 @@
 const Branch = require('../models/Branch');
 const Commit = require('../models/Commit');
 const MergeRequest = require('../models/MergeRequest');
+const User = require('../models/User');
+const TeamMember = require('../models/TeamMember');
 const { AppError } = require('../middleware/errorHandler');
 const { generateCommitHash } = require('../utils/commitHash');
 const { saveFile, saveCurrentSnapshot, getCurrentSnapshot, copyCurrentSnapshot } = require('../services/storage/fileStorage');
@@ -22,15 +24,203 @@ const {
 const getBranches = async (req, res, next) => {
   try {
     const { projectId } = req.params;
+    const teamMember = req.teamMember;
+    const userId = req.userId;
+    console.log('getBranches------>' , userId);
 
-    const branches = await Branch.find({
+    // Debug logging
+    console.log(`[Get Branches] Request received - projectId: ${projectId}, userId: ${userId}, teamMember: ${teamMember ? JSON.stringify({ userId: teamMember.userId, role: teamMember.role }) : 'null'}`);
+
+    const query = {
       projectId,
       status: { $ne: 'deleted' },
-    }).sort({ createdAt: -1 });
+    };
+
+    // Designers only see their own branches; managers see everything
+    // Ensure teamMember exists and check role explicitly
+    if (!teamMember || teamMember.role !== 'manager') {
+      // For designers (or if teamMember is not set), filter by createdBy
+      // Convert both values to strings for consistent comparison
+      if (userId) {
+        const userIdString = String(userId);
+        query.createdBy = userIdString;
+        console.log(`[Get Branches] 🔒 Applying filter: createdBy must equal "${userIdString}" (role: ${teamMember?.role || 'unknown'})`);
+      } else {
+        // If no userId, return empty results for non-managers
+        query.createdBy = null; // This will match nothing if createdBy is always set
+        console.log(`[Get Branches] ⚠️ No userId found - returning empty results for non-manager`);
+      }
+    } else {
+      // Manager sees all branches
+      console.log(`[Get Branches] ✅ Manager access - showing all branches for project: ${projectId}`);
+    }
+
+    // Log the query for debugging
+    console.log(`[Get Branches] MongoDB query:`, JSON.stringify(query, null, 2));
+    
+    const branches = await Branch.find(query).sort({ createdAt: -1 });
+
+    // Log found branches for debugging
+    console.log(`[Get Branches] Found ${branches.length} branches matching query`);
+    branches.forEach(branch => {
+      console.log(`  - Branch: "${branch.name}", createdBy: "${branch.createdBy}", requested userId: "${userId}"`);
+    });
+
+    // Manually populate creator user data (since userId is a string, not ObjectId)
+    const branchesWithUsers = await Promise.all(
+      branches.map(async (branch) => {
+        const branchObj = branch.toObject();
+        
+        // Get creator user with enhanced lookup and fallbacks
+        if (branch.createdBy) {
+          try {
+            // Convert to string to ensure consistent matching
+            const createdByUserId = String(branch.createdBy);
+            
+            // Step 1: Try to find in User collection (exact match)
+            let creator = await User.findOne({ userId: createdByUserId });
+            
+            if (creator) {
+              branchObj.createdByUser = {
+                userId: creator.userId,
+                name: creator.name || 'Unknown User',
+                email: creator.email,
+                avatarUrl: creator.avatarUrl,
+              };
+            } else {
+              // Step 2: Try to find in TeamMember collection (project-specific)
+              const teamMember = await TeamMember.findOne({
+                projectId,
+                userId: createdByUserId,
+              });
+              
+              if (teamMember) {
+                // Extract name from email if available
+                let displayName = teamMember.email;
+                if (teamMember.email && teamMember.email.includes('@')) {
+                  displayName = teamMember.email.split('@')[0];
+                  displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+                  displayName = displayName.replace(/[._-]/g, ' ');
+                } else {
+                  displayName = teamMember.userId;
+                }
+                
+                branchObj.createdByUser = {
+                  userId: teamMember.userId,
+                  name: displayName || 'Unknown User',
+                  email: teamMember.email || null,
+                  avatarUrl: null,
+                };
+              } else {
+                // Step 3: Get all team members and try to match
+                const allTeamMembers = await TeamMember.find({
+                  projectId,
+                  status: 'active',
+                });
+                
+                // Try to match by email if userId looks like an email
+                let matchedMember = null;
+                if (createdByUserId.includes('@')) {
+                  matchedMember = allTeamMembers.find(m => m.email === createdByUserId);
+                }
+                
+                // If still no match, try to match any team member's userId (in case of format mismatch)
+                if (!matchedMember && allTeamMembers.length > 0) {
+                  // Try string comparison
+                  matchedMember = allTeamMembers.find(m => String(m.userId) === createdByUserId);
+                  
+                  // If still no match and we only have one team member, use them as fallback
+                  if (!matchedMember && allTeamMembers.length === 1) {
+                    matchedMember = allTeamMembers[0];
+                    console.log(`[Branch ${branch.name}] Using fallback: single team member as creator (original userId: ${createdByUserId})`);
+                  }
+                }
+                
+                if (matchedMember) {
+                  let displayName = matchedMember.email;
+                  if (matchedMember.email && matchedMember.email.includes('@')) {
+                    displayName = matchedMember.email.split('@')[0];
+                    displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+                    displayName = displayName.replace(/[._-]/g, ' ');
+                  } else {
+                    displayName = matchedMember.userId;
+                  }
+                  
+                  branchObj.createdByUser = {
+                    userId: matchedMember.userId,
+                    name: displayName || 'Unknown User',
+                    email: matchedMember.email || null,
+                    avatarUrl: null,
+                  };
+                } else {
+                  // Step 4: Try to extract meaningful name from userId pattern
+                  let displayName = createdByUserId;
+                  
+                  // Extract from patterns like "designer_1234567890_abc123" -> "Designer"
+                  if (createdByUserId.includes('_')) {
+                    const parts = createdByUserId.split('_');
+                    if (parts[0] && parts[0] !== 'temp') {
+                      displayName = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+                    }
+                  } else if (createdByUserId.match(/^[a-z]+\d+$/i)) {
+                    // Pattern: "user123" -> "User 123"
+                    const match = createdByUserId.match(/^([a-z]+)(\d+)$/i);
+                    if (match) {
+                      displayName = match[1].charAt(0).toUpperCase() + match[1].slice(1) + ' ' + match[2];
+                    }
+                  } else if (createdByUserId.includes('@')) {
+                    // If it's an email, extract name part
+                    displayName = createdByUserId.split('@')[0];
+                    displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+                    displayName = displayName.replace(/[._-]/g, ' ');
+                  }
+                  
+                  // If we couldn't extract a meaningful name, use "Unknown User"
+                  if (displayName === createdByUserId && (displayName.length > 20 || /^[\d_]+$/.test(displayName))) {
+                    displayName = 'Unknown User';
+                  }
+                  
+                  branchObj.createdByUser = {
+                    userId: createdByUserId,
+                    name: displayName || 'Unknown User',
+                    email: null,
+                    avatarUrl: null,
+                  };
+                }
+              }
+            }
+            
+            // Final validation: ensure createdByUser has a valid name
+            if (!branchObj.createdByUser || !branchObj.createdByUser.name || branchObj.createdByUser.name.trim() === '') {
+              branchObj.createdByUser = {
+                userId: createdByUserId,
+                name: 'Unknown User',
+                email: null,
+                avatarUrl: null,
+              };
+            }
+          } catch (error) {
+            console.error(`[Branch ${branch.name}] Error fetching creator info for userId "${branch.createdBy}":`, error);
+            // Final fallback
+            branchObj.createdByUser = {
+              userId: String(branch.createdBy),
+              name: 'Unknown User',
+              email: null,
+              avatarUrl: null,
+            };
+          }
+        } else {
+          // No createdBy field at all
+          branchObj.createdByUser = null;
+        }
+        
+        return branchObj;
+      })
+    );
 
     res.json({
       success: true,
-      branches,
+      branches: branchesWithUsers,
     });
   } catch (error) {
     next(error);
@@ -57,6 +247,21 @@ const getBranch = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Branch not found', 404);
     }
 
+    // Access control: Designers can only access their own branches; managers can access all
+    const isManager = req.teamMember?.role === 'manager';
+    const userId = req.userId;
+    
+    // Convert both to strings for consistent comparison
+    const branchCreatorId = String(branch.createdBy || '');
+    const currentUserId = String(userId || '');
+    
+    if (!isManager && branchCreatorId !== currentUserId) {
+      console.log(`[Get Branch] Access denied: User "${currentUserId}" (role: ${req.teamMember?.role || 'unknown'}) attempted to access branch "${decodedBranchName}" created by "${branchCreatorId}"`);
+      throw new AppError('FORBIDDEN', 'You do not have access to this branch', 403);
+    }
+    
+    console.log(`[Get Branch] Access granted: User "${currentUserId}" (role: ${req.teamMember?.role || 'unknown'}) accessing branch "${decodedBranchName}" created by "${branchCreatorId}"`);
+
     // Get recent commits
     const commits = await Commit.find({
       projectId,
@@ -65,10 +270,142 @@ const getBranch = async (req, res, next) => {
       .sort({ timestamp: -1 })
       .limit(10);
 
+    // Get creator user info with enhanced lookup (same logic as getBranches)
+    const branchObj = branch.toObject();
+    if (branch.createdBy) {
+      try {
+        // Convert to string to ensure consistent matching
+        const createdByUserId = String(branch.createdBy);
+        
+        // Step 1: Try to find in User collection
+        let creator = await User.findOne({ userId: createdByUserId });
+        
+        if (creator) {
+          branchObj.createdByUser = {
+            userId: creator.userId,
+            name: creator.name || 'Unknown User',
+            email: creator.email,
+            avatarUrl: creator.avatarUrl,
+          };
+        } else {
+          // Step 2: Try to find in TeamMember collection
+          const teamMember = await TeamMember.findOne({
+            projectId,
+            userId: createdByUserId,
+          });
+          
+          if (teamMember) {
+            let displayName = teamMember.email;
+            if (teamMember.email && teamMember.email.includes('@')) {
+              displayName = teamMember.email.split('@')[0];
+              displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+              displayName = displayName.replace(/[._-]/g, ' ');
+            } else {
+              displayName = teamMember.userId;
+            }
+            
+            branchObj.createdByUser = {
+              userId: teamMember.userId,
+              name: displayName || 'Unknown User',
+              email: teamMember.email || null,
+              avatarUrl: null,
+            };
+          } else {
+            // Step 3: Get all team members and try to match
+            const allTeamMembers = await TeamMember.find({
+              projectId,
+              status: 'active',
+            });
+            
+            let matchedMember = null;
+            if (createdByUserId.includes('@')) {
+              matchedMember = allTeamMembers.find(m => m.email === createdByUserId);
+            }
+            
+            if (!matchedMember && allTeamMembers.length > 0) {
+              matchedMember = allTeamMembers.find(m => String(m.userId) === createdByUserId);
+              
+              if (!matchedMember && allTeamMembers.length === 1) {
+                matchedMember = allTeamMembers[0];
+              }
+            }
+            
+            if (matchedMember) {
+              let displayName = matchedMember.email;
+              if (matchedMember.email && matchedMember.email.includes('@')) {
+                displayName = matchedMember.email.split('@')[0];
+                displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+                displayName = displayName.replace(/[._-]/g, ' ');
+              } else {
+                displayName = matchedMember.userId;
+              }
+              
+              branchObj.createdByUser = {
+                userId: matchedMember.userId,
+                name: displayName || 'Unknown User',
+                email: matchedMember.email || null,
+                avatarUrl: null,
+              };
+            } else {
+              // Step 4: Extract name from userId pattern
+              let displayName = createdByUserId;
+              
+              if (createdByUserId.includes('_')) {
+                const parts = createdByUserId.split('_');
+                if (parts[0] && parts[0] !== 'temp') {
+                  displayName = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+                }
+              } else if (createdByUserId.match(/^[a-z]+\d+$/i)) {
+                const match = createdByUserId.match(/^([a-z]+)(\d+)$/i);
+                if (match) {
+                  displayName = match[1].charAt(0).toUpperCase() + match[1].slice(1) + ' ' + match[2];
+                }
+              } else if (createdByUserId.includes('@')) {
+                displayName = createdByUserId.split('@')[0];
+                displayName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
+                displayName = displayName.replace(/[._-]/g, ' ');
+              }
+              
+              if (displayName === createdByUserId && (displayName.length > 20 || /^[\d_]+$/.test(displayName))) {
+                displayName = 'Unknown User';
+              }
+              
+              branchObj.createdByUser = {
+                userId: createdByUserId,
+                name: displayName || 'Unknown User',
+                email: null,
+                avatarUrl: null,
+              };
+            }
+          }
+        }
+        
+        // Final validation
+        if (!branchObj.createdByUser || !branchObj.createdByUser.name || branchObj.createdByUser.name.trim() === '') {
+          branchObj.createdByUser = {
+            userId: createdByUserId,
+            name: 'Unknown User',
+            email: null,
+            avatarUrl: null,
+          };
+        }
+      } catch (error) {
+        console.error(`[Branch ${branch.name}] Error fetching creator info:`, error);
+        branchObj.createdByUser = {
+          userId: String(branch.createdBy),
+          name: 'Unknown User',
+          email: null,
+          avatarUrl: null,
+        };
+      }
+    } else {
+      branchObj.createdByUser = null;
+    }
+
     res.json({
       success: true,
       branch: {
-        ...branch.toObject(),
+        ...branchObj,
         commits,
       },
     });
@@ -85,6 +422,7 @@ const createBranch = async (req, res, next) => {
     const { projectId } = req.params;
     const { name, type, description, baseBranch } = req.body;
     const userId = req.userId;
+    console.log('createBranch------------------------------------>', userId);
 
     // Validate branch name format
     const fullName = `${type}/${name}`;
@@ -111,17 +449,31 @@ const createBranch = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Base branch not found', 404);
     }
 
-    // Create branch
+    // Convert userId to string for consistency
+    const userIdString = String(userId || '');
+    
+    // Log branch creation with userId for debugging
+    console.log(`[Create Branch] Creating branch "${fullName}" with creator userId: ${userIdString}`);
+    
+    // Verify user exists before creating branch
+    const creatorCheck = await User.findOne({ userId: userIdString });
+    if (!creatorCheck) {
+      console.warn(`[Create Branch] Warning: User with userId "${userIdString}" not found in User collection. Branch will still be created.`);
+    }
+
+    // Create branch - ensure createdBy is a string for consistent comparison
     const branch = await Branch.create({
       projectId,
       name: fullName,
       type,
       description: description || '',
       baseBranch,
-      createdBy: userId,
+      createdBy: userIdString,
       isPrimary: false,
       status: 'active',
     });
+    
+    console.log(`[Create Branch] Branch "${fullName}" created successfully with ID: ${branch._id}`);
 
     // Copy current snapshot from base branch to new branch
     // This ensures the new branch has all the properties (alignment, size, color, etc.) from the source
@@ -139,7 +491,7 @@ const createBranch = async (req, res, next) => {
       
       if (baseCommit) {
         // Copy base branch snapshot
-        const commitHash = generateCommitHash(projectId, branch._id.toString(), 'Initial commit from base branch', userId);
+        const commitHash = generateCommitHash(projectId, branch._id.toString(), 'Initial commit from base branch', userIdString);
         
         // Read the base branch's current snapshot to copy it as the initial commit
         try {
@@ -154,13 +506,13 @@ const createBranch = async (req, res, next) => {
             'json'
           );
           
-          // Create commit record
+          // Create commit record - ensure authorId is a string for consistency
           const commit = await Commit.create({
             projectId,
             branchId: branch._id,
             hash: commitHash,
             message: 'Initial commit from base branch',
-            authorId: userId,
+            authorId: userIdString,
             parentCommitHash: baseCommit.hash,
             changes: {
               filesAdded: 0,
@@ -184,33 +536,33 @@ const createBranch = async (req, res, next) => {
           await branch.save();
         } catch (snapshotError) {
           console.warn(`⚠️ Could not copy base branch snapshot for commit:`, snapshotError.message);
-          // Create commit without snapshot file reference
-          const commit = await Commit.create({
-            projectId,
-            branchId: branch._id,
-            hash: commitHash,
-            message: 'Initial commit from base branch',
-            authorId: userId,
-            parentCommitHash: baseCommit.hash,
-            changes: {
-              filesAdded: 0,
-              filesModified: 0,
-              filesDeleted: 0,
-              componentsUpdated: 0,
-            },
-            snapshot: {
-              fileUrl: baseCommit.snapshot.fileUrl, // Reference same file for now
-              thumbnailUrl: baseCommit.snapshot.thumbnailUrl,
-            },
-          });
+          // Create commit without snapshot file reference - ensure authorId is a string for consistency
+        const commit = await Commit.create({
+          projectId,
+          branchId: branch._id,
+          hash: commitHash,
+          message: 'Initial commit from base branch',
+          authorId: userIdString,
+          parentCommitHash: baseCommit.hash,
+          changes: {
+            filesAdded: 0,
+            filesModified: 0,
+            filesDeleted: 0,
+            componentsUpdated: 0,
+          },
+          snapshot: {
+            fileUrl: baseCommit.snapshot.fileUrl, // Reference same file for now
+            thumbnailUrl: baseCommit.snapshot.thumbnailUrl,
+          },
+        });
 
-          branch.lastCommit = {
-            hash: commit.hash,
-            message: commit.message,
-            timestamp: commit.timestamp,
-            authorId: commit.authorId,
-          };
-          await branch.save();
+        branch.lastCommit = {
+          hash: commit.hash,
+          message: commit.message,
+          timestamp: commit.timestamp,
+          authorId: commit.authorId,
+        };
+        await branch.save();
         }
       }
     }
@@ -503,6 +855,58 @@ const checkoutBranch = async (req, res, next) => {
   }
 };
 
+/**
+ * Debug endpoint to check branch creator data
+ * This helps identify why creator names aren't showing
+ */
+const debugBranchCreators = async (req, res, next) => {
+  try {
+    const { projectId } = req.params;
+
+    const branches = await Branch.find({
+      projectId,
+      status: { $ne: 'deleted' },
+    }).sort({ createdAt: -1 });
+
+    const allUsers = await User.find({});
+    const allTeamMembers = await TeamMember.find({
+      projectId,
+      status: 'active',
+    });
+
+    const debugInfo = branches.map(branch => {
+      // Use String() conversion for consistent comparison
+      const branchCreatedBy = String(branch.createdBy || '');
+      const user = allUsers.find(u => String(u.userId) === branchCreatedBy);
+      const teamMember = allTeamMembers.find(tm => String(tm.userId) === branchCreatedBy);
+      
+      return {
+        branchName: branch.name,
+        branchCreatedBy: branch.createdBy,
+        userFound: !!user,
+        userDetails: user ? { userId: user.userId, name: user.name, email: user.email } : null,
+        teamMemberFound: !!teamMember,
+        teamMemberDetails: teamMember ? { userId: teamMember.userId, email: teamMember.email, role: teamMember.role } : null,
+        allUserIds: allUsers.map(u => u.userId),
+        allTeamMemberUserIds: allTeamMembers.map(tm => tm.userId),
+      };
+    });
+
+    res.json({
+      success: true,
+      debug: {
+        branches: debugInfo,
+        totalUsers: allUsers.length,
+        totalTeamMembers: allTeamMembers.length,
+        allUserIds: allUsers.map(u => u.userId),
+        allTeamMemberUserIds: allTeamMembers.map(tm => tm.userId),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   getBranches,
   getBranch,
@@ -511,4 +915,5 @@ module.exports = {
   getBranchSnapshot,
   saveBranchSnapshot,
   checkoutBranch,
+  debugBranchCreators,
 };

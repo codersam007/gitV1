@@ -30,6 +30,9 @@ let currentBranchId = null;
 let currentBranchName = null;
 let branchStateHash = null; // Hash of current branch state for change detection
 
+// Pending images for async processing (module-level variable, not window)
+let _pendingImages = null;
+
 /**
  * Initialize branch manager
  */
@@ -178,6 +181,15 @@ function serializeElement(element) {
             elementType = 'Path';
         } else if (constructorName === 'MediaContainerNode' || constructorName === 'MediaContainer') {
             elementType = 'Image';
+        } else if (constructorName === 'ComplexShapeNode' || constructorName === 'ComplexShape') {
+            // ComplexShapeNode can be various things - check if it has image-like properties
+            if (element.mediaRectangle || (element.children && element.children.length > 0)) {
+                elementType = 'ComplexShape'; // Keep as ComplexShape for now
+            } else {
+                elementType = 'ComplexShape';
+            }
+        } else if (constructorName === 'ImageRectangleNode' || constructorName === 'ImageRectangle') {
+            elementType = 'Image';
         } else {
             elementType = constructorName; // Fallback to actual name
         }
@@ -310,8 +322,8 @@ function serializeElement(element) {
             }
         }
         
-        // Handle image-specific properties (MediaContainerNode)
-        if (elementType === 'Image') {
+        // Handle image-specific properties (MediaContainerNode, ComplexShapeNode with images)
+        if (elementType === 'Image' || elementType === 'ComplexShape') {
             try {
                 // MediaContainerNode has mediaRectangle and maskShape
                 if (element.mediaRectangle) {
@@ -328,6 +340,11 @@ function serializeElement(element) {
                     // Mark for async image data extraction
                     baseData.hasImageData = true;
                     baseData.imageId = element.id; // Use element ID as image identifier
+                    
+                    // If this was ComplexShape but has mediaRectangle, mark it as Image for import
+                    if (elementType === 'ComplexShape') {
+                        baseData.type = 'Image'; // Override type for proper import handling
+                    }
                 }
                 
                 // Get mask shape properties if present (for cropping)
@@ -611,14 +628,18 @@ async function exportDocument() {
                         const elementDataList = [];
                         const imageElements = []; // Store image elements for async processing
                         
+                        // Image types that need async data extraction
+                        const imageTypesForExport = ['Image', 'MediaContainerNode', 'ComplexShape', 'ComplexShapeNode'];
+                        
                         for (let j = 0; j < childCount; j++) {
                             const element = children.item(j);
                             if (!element) continue;
                             
                             const elementData = serializeElement(element);
                             if (elementData) {
-                                // If it's an image, store reference for async image data extraction
-                                if (elementData.type === 'Image' && elementData.hasImageData) {
+                                // If it's an image type with image data marker, store for async extraction
+                                const isImageType = imageTypesForExport.includes(elementData.type);
+                                if ((isImageType && elementData.hasImageData) || element.mediaRectangle) {
                                     imageElements.push({ element, elementData });
                                 }
                                 elementDataList.push(elementData);
@@ -635,18 +656,40 @@ async function exportDocument() {
                                         // Convert Blob to base64
                                         const blob = await bitmapImage.data();
                                         
-                                        // Validate blob
+                                        // Validate blob - must have reasonable size (at least 100 bytes for any valid image)
                                         if (!blob || blob.size === 0) {
                                             console.warn(`⚠️ Image element ${element.id} - blob is empty or invalid`);
                                             elementData.imageData = null;
                                             continue;
                                         }
                                         
+                                        // Minimum size check - valid images are at least a few hundred bytes
+                                        if (blob.size < 100) {
+                                            console.warn(`⚠️ Image element ${element.id} - blob too small (${blob.size} bytes), likely corrupted`);
+                                            elementData.imageData = null;
+                                            continue;
+                                        }
+                                        
                                         const base64 = await blobToBase64(blob);
                                         
-                                        // Validate base64 string
+                                        // Validate base64 string - must be substantial
                                         if (!base64 || base64.length === 0) {
                                             console.warn(`⚠️ Image element ${element.id} - base64 conversion failed`);
+                                            elementData.imageData = null;
+                                            continue;
+                                        }
+                                        
+                                        // Validate base64 length matches blob size (roughly 4/3 ratio due to base64 encoding)
+                                        const expectedMinLength = Math.floor(blob.size * 1.3);
+                                        if (base64.length < expectedMinLength * 0.5) {
+                                            console.warn(`⚠️ Image element ${element.id} - base64 length (${base64.length}) too small for blob size (${blob.size}), data may be corrupted`);
+                                            elementData.imageData = null;
+                                            continue;
+                                        }
+                                        
+                                        // Validate bitmap dimensions are reasonable
+                                        if (!bitmapImage.width || !bitmapImage.height || bitmapImage.width <= 0 || bitmapImage.height <= 0) {
+                                            console.warn(`⚠️ Image element ${element.id} - invalid bitmap dimensions (${bitmapImage.width}x${bitmapImage.height})`);
                                             elementData.imageData = null;
                                             continue;
                                         }
@@ -954,10 +997,24 @@ function deserializeElement(elementData, parent) {
                 
             case 'Image':
             case 'MediaContainerNode':
+            case 'ImageRectangleNode':
                 // Images require async loading - we'll handle them separately in importDocument
                 // Mark this element for async processing and return early
                 elementData._needsAsyncImageLoad = true;
                 return; // Skip for now, will handle in async step in importDocument
+            
+            case 'ComplexShape':
+            case 'ComplexShapeNode':
+                // ComplexShapeNode is used for complex shapes like images with effects, clipped shapes, etc.
+                // If it has imageData, treat as image
+                if (elementData.imageData || elementData.hasImageData) {
+                    elementData._needsAsyncImageLoad = true;
+                    return; // Handle as image in async step
+                }
+                // Otherwise, create a rectangle as placeholder (ComplexShape can't be created directly)
+                console.warn(`ComplexShapeNode without image data, creating rectangle placeholder`);
+                element = editor.createRectangle();
+                break;
                 
             default:
                 console.warn(`Unknown element type: ${elementData.type}, creating rectangle as fallback`);
@@ -1034,6 +1091,12 @@ async function deserializeImage(elementData, parent) {
             return;
         }
         
+        // Validate base64 string has minimum length (small images are at least a few hundred chars)
+        if (elementData.imageData.length < 100) {
+            console.error(`❌ Base64 string too short (${elementData.imageData.length} chars), image data likely corrupted`);
+            return;
+        }
+        
         // Convert base64 to Blob with validation
         const mimeType = elementData.imageMimeType || 'image/png';
         let blob;
@@ -1045,9 +1108,14 @@ async function deserializeImage(elementData, parent) {
             return;
         }
         
-        // Validate blob before loading
+        // Validate blob before loading - must have reasonable size
         if (!blob || blob.size === 0) {
             console.error('❌ Blob is empty or invalid');
+            return;
+        }
+        
+        if (blob.size < 100) {
+            console.error(`❌ Blob too small (${blob.size} bytes), image data likely corrupted`);
             return;
         }
         
@@ -1058,6 +1126,12 @@ async function deserializeImage(elementData, parent) {
             if (!bitmapImage) {
                 throw new Error('loadBitmapImage returned null or undefined');
             }
+            
+            // Validate loaded bitmap has valid dimensions
+            if (!bitmapImage.width || !bitmapImage.height || bitmapImage.width <= 0 || bitmapImage.height <= 0) {
+                throw new Error(`Invalid bitmap dimensions: ${bitmapImage.width}x${bitmapImage.height}`);
+            }
+            
             console.log(`✅ Loaded bitmap image: ${bitmapImage.width}x${bitmapImage.height}`);
         } catch (loadError) {
             console.error(`❌ Failed to load bitmap image:`, loadError);
@@ -1240,9 +1314,16 @@ async function importDocument(documentState) {
                     const regularElements = [];
                     const imageElements = [];
                     
+                    // Image types that need async loading
+                    const imageTypes = ['Image', 'MediaContainerNode', 'ImageRectangleNode', 'ComplexShape', 'ComplexShapeNode'];
+                    
                     for (let i = 0; i < artboardData.elements.length; i++) {
                         const elementData = artboardData.elements[i];
-                        if (elementData.type === 'Image' && elementData.imageData) {
+                        // Check if element is an image type with image data
+                        const isImageType = imageTypes.includes(elementData.type);
+                        const hasImageData = elementData.imageData || elementData.hasImageData;
+                        
+                        if (isImageType && hasImageData) {
                             imageElements.push(elementData);
                         } else {
                             regularElements.push(elementData);
@@ -1266,7 +1347,7 @@ async function importDocument(documentState) {
                     if (imageElements.length > 0) {
                         console.log(`🖼️ Found ${imageElements.length} image(s) to load asynchronously`);
                         // We'll process images after this queueAsyncEdit completes
-                        window._pendingImages = imageElements.map(el => ({ elementData: el, artboard: artboard }));
+                        _pendingImages = imageElements.map(el => ({ elementData: el, artboard: artboard }));
                     }
                 } else {
                     console.log('ℹ️ Artboard has no elements');
@@ -1277,10 +1358,10 @@ async function importDocument(documentState) {
         });
         
         // After queueAsyncEdit, process images asynchronously
-        if (window._pendingImages && window._pendingImages.length > 0) {
-            console.log(`🖼️ Processing ${window._pendingImages.length} image(s)...`);
+        if (_pendingImages && _pendingImages.length > 0) {
+            console.log(`🖼️ Processing ${_pendingImages.length} image(s)...`);
             
-            for (const { elementData, artboard } of window._pendingImages) {
+            for (const { elementData, artboard } of _pendingImages) {
                 try {
                     await deserializeImage(elementData, artboard);
                 } catch (imageError) {
@@ -1289,7 +1370,7 @@ async function importDocument(documentState) {
             }
             
             // Clear pending images
-            window._pendingImages = null;
+            _pendingImages = null;
         }
         
         console.log('✅ Document imported successfully');

@@ -49,6 +49,9 @@ const authenticate = async (req, res, next) => {
     req.user = user;
     req.userId = user.userId;
     
+    // Debug logging
+    console.log(`[Auth Middleware] User authenticated: userId="${user.userId}", name="${user.name}"`);
+    
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {

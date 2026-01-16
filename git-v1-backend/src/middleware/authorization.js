@@ -20,19 +20,28 @@ const checkProjectAccess = async (req, res, next) => {
     const { projectId } = req.params;
     const userId = req.userId;
 
+    // Debug logging
+    console.log(`[CheckProjectAccess] Looking for team member: projectId="${projectId}", userId="${userId}"`);
+
     // Check if user is a team member
+    // Convert both to strings for consistent comparison
     const teamMember = await TeamMember.findOne({
       projectId,
-      userId,
+      userId: String(userId),
       status: 'active',
     });
 
     if (!teamMember) {
+      console.log(`[CheckProjectAccess] ❌ Team member not found for userId="${userId}" in projectId="${projectId}"`);
       throw new AppError('FORBIDDEN', 'You do not have access to this project', 403);
     }
 
     // Attach team member info to request
     req.teamMember = teamMember;
+    
+    // Debug logging
+    console.log(`[CheckProjectAccess] ✅ Team member found: userId="${teamMember.userId}", role="${teamMember.role}"`);
+    
     next();
   } catch (error) {
     next(error);

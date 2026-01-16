@@ -13,6 +13,7 @@ const {
   approveMergeRequest,
   requestChanges,
   completeMerge,
+  revertMerge,
 } = require('../controllers/mergeRequestController');
 const { authenticate } = require('../middleware/auth');
 const { checkProjectAccess, checkReviewer, checkManager } = require('../middleware/authorization');
@@ -57,5 +58,11 @@ router.post('/:mergeRequestId/merge', authenticate, (req, res, next) => {
   req.params.projectId = req.query.projectId;
   next();
 }, checkProjectAccess, checkManager, completeMerge);
+
+// POST /api/v1/merge-requests/:mergeRequestId/revert?projectId=:projectId - Revert merge
+router.post('/:mergeRequestId/revert', authenticate, (req, res, next) => {
+  req.params.projectId = req.query.projectId;
+  next();
+}, checkProjectAccess, checkManager, revertMerge);
 
 module.exports = router;

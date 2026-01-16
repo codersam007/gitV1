@@ -181,6 +181,76 @@ const copyCurrentSnapshot = async (projectId, sourceBranchId, targetBranchId) =>
 };
 
 /**
+ * Get commit snapshot file
+ * @param {String} projectId - Project ID
+ * @param {String} branchId - Branch ID
+ * @param {String} commitHash - Commit hash
+ * @returns {Buffer} File data
+ */
+const getCommitSnapshot = async (projectId, branchId, commitHash) => {
+  try {
+    const filePath = path.join(
+      config.storage.path,
+      'projects',
+      projectId,
+      'branches',
+      branchId.toString(),
+      'commits',
+      `${commitHash}.json`
+    );
+
+    return await readFile(filePath);
+  } catch (error) {
+    if (error.message === 'File not found') {
+      throw new Error('Commit snapshot not found');
+    }
+    throw error;
+  }
+};
+
+/**
+ * Delete entire branch directory (including current.json and all commits)
+ * @param {String} projectId - Project ID
+ * @param {String} branchId - Branch ID
+ */
+const deleteBranchDirectory = async (projectId, branchId) => {
+  try {
+    const branchDirPath = path.join(
+      config.storage.path,
+      'projects',
+      projectId,
+      'branches',
+      branchId.toString()
+    );
+
+    // Use fs.rm with recursive option (Node.js 14.14.0+)
+    // Fallback to fs.rmdir for older versions
+    try {
+      await fs.rm(branchDirPath, { recursive: true, force: true });
+    } catch (error) {
+      // Fallback for older Node.js versions
+      if (error.code === 'ENOENT') {
+        // Directory doesn't exist, that's okay
+        return;
+      }
+      // Try with rmdir if rm doesn't exist
+      try {
+        await fs.rmdir(branchDirPath, { recursive: true });
+      } catch (rmdirError) {
+        if (rmdirError.code !== 'ENOENT') {
+          throw rmdirError;
+        }
+      }
+    }
+
+    console.log(`Deleted branch directory: ${branchDirPath}`);
+  } catch (error) {
+    console.error('Error deleting branch directory:', error);
+    throw new Error('Failed to delete branch directory');
+  }
+};
+
+/**
  * TODO: Implement S3 upload
  * Example implementation:
  * 
@@ -207,4 +277,6 @@ module.exports = {
   saveCurrentSnapshot,
   getCurrentSnapshot,
   copyCurrentSnapshot,
+  deleteBranchDirectory,
+  getCommitSnapshot,
 };

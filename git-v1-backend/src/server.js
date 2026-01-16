@@ -87,6 +87,10 @@ app.use(express.urlencoded({ extended: true }));
 // Request logging middleware (simple version)
 app.use((req, res, next) => {
   console.log(`${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
+  // Log route matching for debugging
+  if (req.originalUrl.includes('revert')) {
+    console.log('🔍 Revert route request:', req.method, req.originalUrl, req.params);
+  }
   next();
 });
 
