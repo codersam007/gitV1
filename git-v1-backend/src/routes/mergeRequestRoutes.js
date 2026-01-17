@@ -35,7 +35,7 @@ router.get('/:mergeRequestId', authenticate, (req, res, next) => {
 router.post('/', authenticate, (req, res, next) => {
   // Extract projectId from body and add to params for middleware
   if (req.body.projectId) {
-    req.params.projectId = req.body.projectId;
+  req.params.projectId = req.body.projectId;
   }
   next();
 }, checkProjectAccess, validateCreateMergeRequest, createMergeRequest);

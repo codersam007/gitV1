@@ -36,24 +36,9 @@ const getBranches = async (req, res, next) => {
       status: { $ne: 'deleted' },
     };
 
-    // Designers only see their own branches; managers see everything
-    // Ensure teamMember exists and check role explicitly
-    if (!teamMember || teamMember.role !== 'manager') {
-      // For designers (or if teamMember is not set), filter by createdBy
-      // Convert both values to strings for consistent comparison
-      if (userId) {
-        const userIdString = String(userId);
-        query.createdBy = userIdString;
-        console.log(`[Get Branches] 🔒 Applying filter: createdBy must equal "${userIdString}" (role: ${teamMember?.role || 'unknown'})`);
-      } else {
-        // If no userId, return empty results for non-managers
-        query.createdBy = null; // This will match nothing if createdBy is always set
-        console.log(`[Get Branches] ⚠️ No userId found - returning empty results for non-manager`);
-      }
-    } else {
-      // Manager sees all branches
-      console.log(`[Get Branches] ✅ Manager access - showing all branches for project: ${projectId}`);
-    }
+    // Everyone (designers and managers) can see all branches
+    // No filtering by createdBy - all team members see all branches
+    console.log(`[Get Branches] ✅ Showing all branches for project: ${projectId} (user: ${userId}, role: ${teamMember?.role || 'unknown'})`);
 
     // Log the query for debugging
     console.log(`[Get Branches] MongoDB query:`, JSON.stringify(query, null, 2));
@@ -247,20 +232,13 @@ const getBranch = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Branch not found', 404);
     }
 
-    // Access control: Designers can only access their own branches; managers can access all
-    const isManager = req.teamMember?.role === 'manager';
+    // Everyone (designers and managers) can access all branches
+    // No access restrictions - all team members can view any branch
     const userId = req.userId;
-    
-    // Convert both to strings for consistent comparison
     const branchCreatorId = String(branch.createdBy || '');
     const currentUserId = String(userId || '');
     
-    if (!isManager && branchCreatorId !== currentUserId) {
-      console.log(`[Get Branch] Access denied: User "${currentUserId}" (role: ${req.teamMember?.role || 'unknown'}) attempted to access branch "${decodedBranchName}" created by "${branchCreatorId}"`);
-      throw new AppError('FORBIDDEN', 'You do not have access to this branch', 403);
-    }
-    
-    console.log(`[Get Branch] Access granted: User "${currentUserId}" (role: ${req.teamMember?.role || 'unknown'}) accessing branch "${decodedBranchName}" created by "${branchCreatorId}"`);
+    console.log(`[Get Branch] ✅ Access granted: User "${currentUserId}" (role: ${req.teamMember?.role || 'unknown'}) accessing branch "${decodedBranchName}" created by "${branchCreatorId}"`);
 
     // Get recent commits
     const commits = await Commit.find({
@@ -439,15 +417,19 @@ const createBranch = async (req, res, next) => {
     }
 
     // Check if base branch exists
+    // Allow any status except deleted
     const baseBranchDoc = await Branch.findOne({
       projectId,
       name: baseBranch,
-      status: 'active',
+      status: { $ne: 'deleted' },
     });
 
     if (!baseBranchDoc) {
       throw new AppError('NOT_FOUND', 'Base branch not found', 404);
     }
+
+    // Everyone can use any branch as base branch - no access restrictions
+    console.log(`[Create Branch] Base branch "${baseBranch}" found (isPrimary: ${baseBranchDoc.isPrimary}, name: ${baseBranchDoc.name})`);
 
     // Convert userId to string for consistency
     const userIdString = String(userId || '');
@@ -730,6 +712,21 @@ const saveBranchSnapshot = async (req, res, next) => {
       throw new AppError('NOT_FOUND', 'Branch not found', 404);
     }
 
+    // Check branch ownership: Only the branch owner can save changes
+    const branchCreatorId = String(branch.createdBy || '');
+    const currentUserIdString = String(userId || '');
+    const isManager = req.teamMember?.role === 'manager';
+    const isPrimaryBranch = branch.isPrimary === true || branch.name === 'main';
+    
+    // Managers can save to any branch, but designers can only save to their own branches
+    // Exception: Primary/main branch can be saved by anyone (but typically only managers modify main)
+    if (!isManager && branchCreatorId !== currentUserIdString && !isPrimaryBranch) {
+      console.log(`[Save Branch Snapshot] Access denied: User "${currentUserIdString}" (role: ${req.teamMember?.role || 'unknown'}) attempted to save changes to branch "${branch.name}" owned by "${branchCreatorId}"`);
+      throw new AppError('FORBIDDEN', 'Only the branch owner can save changes to this branch', 403);
+    }
+    
+    console.log(`[Save Branch Snapshot] ✅ Access granted: User "${currentUserIdString}" saving snapshot to branch "${branch.name}"`);
+
     // Convert snapshot to buffer
     const snapshotBuffer = Buffer.from(JSON.stringify(snapshot));
 
@@ -779,14 +776,29 @@ const checkoutBranch = async (req, res, next) => {
     }
 
     // Save current branch snapshot if provided
+    // BUT: Only save if the user is the branch owner (non-owners' changes are lost on checkout)
     if (sourceBranch && currentSnapshot) {
-      const snapshotBuffer = Buffer.from(JSON.stringify(currentSnapshot));
-      // Use the actual branch _id from the database to ensure consistency
-      await saveCurrentSnapshot(snapshotBuffer, projectId, sourceBranch._id.toString());
+      const sourceBranchCreatorId = String(sourceBranch.createdBy || '');
+      const currentUserIdString = String(userId || '');
+      const isManager = req.teamMember?.role === 'manager';
+      const isPrimaryBranch = sourceBranch.isPrimary === true || sourceBranch.name === 'main';
       
-      // Update source branch
-      sourceBranch.updatedAt = new Date();
-      await sourceBranch.save();
+      // Only save if user is owner, manager, or it's the primary branch
+      if (isManager || sourceBranchCreatorId === currentUserIdString || isPrimaryBranch) {
+        const snapshotBuffer = Buffer.from(JSON.stringify(currentSnapshot));
+        // Use the actual branch _id from the database to ensure consistency
+        await saveCurrentSnapshot(snapshotBuffer, projectId, sourceBranch._id.toString());
+        
+        // Update source branch
+        sourceBranch.updatedAt = new Date();
+        await sourceBranch.save();
+        
+        console.log(`[Checkout Branch] ✅ Saved snapshot for source branch "${sourceBranch.name}" (user is owner/manager)`);
+      } else {
+        // Non-owner's changes are discarded - don't save
+        console.log(`[Checkout Branch] ⚠️ Discarding changes: User "${currentUserIdString}" is not the owner of branch "${sourceBranch.name}" (owned by "${sourceBranchCreatorId}")`);
+        // Don't throw error - just silently discard changes (this is expected behavior)
+      }
     }
 
     // Get target branch snapshot

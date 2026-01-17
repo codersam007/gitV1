@@ -1,6 +1,6 @@
 {
     "testId": "b030cce6-9b49-4ba3-ac25-0e9051da2dc5",
-    "name": "Git V1",
+    "name": "Stream",
     "version": "1.0.0",
     "manifestVersion": 2,
     "requirements": {
@@ -12,6 +12,9 @@
         ],
         "experimentalApis": true
     },
+    "icons": [
+        { "width": 96, "height": 96, "href": "assets/icon.png", "theme": ["all"] }
+    ],
     "entryPoints": [
         {
             "type": "panel",
