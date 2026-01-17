@@ -15,8 +15,10 @@ import addOnUISdk from "https://new.express.adobe.com/static/add-on-sdk/sdk.js";
 // ============================================
 // BACKEND API CONFIGURATION
 // ============================================
-const API_BASE_URL = 'http://localhost:3000/api/v1';
-const AUTH_API_URL = 'http://localhost:3000/auth';
+// Always use Render backend URL (works for both local and production)
+const BACKEND_BASE = 'https://streambackend-7wka.onrender.com';
+const API_BASE_URL = `${BACKEND_BASE}/api/v1`;
+const AUTH_API_URL = `${BACKEND_BASE}/auth`;
 
 // Current project ID (will be set when project is loaded/created)
 let currentProjectId = null;
@@ -231,7 +233,7 @@ async function initializeAuth() {
         }
     } catch (error) {
         console.error('❌ Failed to auto-login:', error);
-        showNotification(`Failed to connect to backend. Please make sure the backend is running on http://localhost:3000\n\nError: ${error.message}`, 'error');
+        showNotification(`Failed to connect to backend.\n\nBackend: https://streambackend-7wka.onrender.com\n\nError: ${error.message}`, 'error');
         return false;
     }
 }

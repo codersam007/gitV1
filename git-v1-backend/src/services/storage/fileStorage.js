@@ -1,70 +1,99 @@
 /**
  * File Storage Service
  * 
- * Handles file storage for design snapshots
- * Currently uses local file system
- * TODO: Migrate to AWS S3 or Google Cloud Storage for production
+ * Handles file storage for design snapshots using MongoDB GridFS
+ * GridFS provides persistent file storage across deployments on Render
  * 
- * Benefits of cloud storage:
- * - Scalability: Handle large files and high traffic
- * - CDN integration: Faster file delivery globally
- * - Reliability: Built-in redundancy and backup
- * - Cost-effective: Pay only for what you use
- * - Security: Built-in access controls and encryption
+ * Benefits of GridFS:
+ * - Persistent storage across deployments
+ * - No ephemeral filesystem issues
+ * - Scalable (handles large files via chunking)
+ * - Integrated with existing MongoDB setup
  */
 
-const fs = require('fs').promises;
-const path = require('path');
+const mongoose = require('mongoose');
+const { GridFSBucket } = require('mongodb');
 const { v4: uuidv4 } = require('uuid');
 const config = require('../../config/config');
 
+// GridFS bucket name for snapshots
+const BUCKET_NAME = 'snapshots';
+
 /**
- * Ensure directory exists
- * @param {String} dirPath - Directory path
+ * Get GridFS bucket instance
+ * @returns {GridFSBucket} GridFS bucket
  */
-const ensureDirectory = async (dirPath) => {
-  try {
-    await fs.mkdir(dirPath, { recursive: true });
-  } catch (error) {
-    if (error.code !== 'EEXIST') {
-      throw error;
-    }
+const getBucket = () => {
+  const db = mongoose.connection.db;
+  if (!db) {
+    throw new Error('Database connection not available');
   }
+  return new GridFSBucket(db, { bucketName: BUCKET_NAME });
 };
 
 /**
- * Save file to local storage
+ * Generate file path for GridFS
+ * @param {String} projectId - Project ID
+ * @param {String} branchId - Branch ID
+ * @param {String} commitHash - Optional commit hash
+ * @param {String} extension - File extension (default: 'json')
+ * @returns {String} File path
+ */
+const generateFilePath = (projectId, branchId, commitHash = null, extension = 'json') => {
+  if (commitHash) {
+    return `projects/${projectId}/branches/${branchId}/commits/${commitHash}.${extension}`;
+  }
+  return `projects/${projectId}/branches/${branchId}/current.${extension}`;
+};
+
+/**
+ * Save file to GridFS
  * @param {Buffer|String} fileData - File data to save
  * @param {String} projectId - Project ID
  * @param {String} branchId - Branch ID
  * @param {String} commitHash - Commit hash
  * @param {String} extension - File extension (e.g., 'json', 'png')
- * @returns {String} File path
+ * @returns {String} File path (GridFS filename)
  */
 const saveFile = async (fileData, projectId, branchId, commitHash, extension = 'json') => {
   try {
-    // Create directory structure: storage/projects/{projectId}/branches/{branchId}/commits/
-    const dirPath = path.join(
-      config.storage.path,
-      'projects',
-      projectId,
-      'branches',
-      branchId.toString(),
-      'commits'
-    );
-
-    await ensureDirectory(dirPath);
-
-    // Create filename with commit hash
-    const filename = `${commitHash}.${extension}`;
-    const filePath = path.join(dirPath, filename);
-
-    // Write file
-    await fs.writeFile(filePath, fileData);
-
-    // Return relative path (for now)
-    // TODO: When migrating to S3, return S3 URL instead
-    return filePath;
+    const bucket = getBucket();
+    const filename = generateFilePath(projectId, branchId, commitHash, extension);
+    
+    // Convert string to Buffer if needed
+    const buffer = Buffer.isBuffer(fileData) ? fileData : Buffer.from(fileData);
+    
+    // Delete existing file if it exists (GridFS allows multiple versions, we want one)
+    try {
+      await deleteFile(filename);
+    } catch (error) {
+      // File doesn't exist, that's okay
+    }
+    
+    // Upload to GridFS
+    return new Promise((resolve, reject) => {
+      const uploadStream = bucket.openUploadStream(filename, {
+        contentType: extension === 'json' ? 'application/json' : 'application/octet-stream',
+        metadata: {
+          projectId,
+          branchId,
+          commitHash: commitHash || null,
+          extension,
+          uploadedAt: new Date(),
+        },
+      });
+      
+      uploadStream.on('error', (error) => {
+        console.error('Error uploading file to GridFS:', error);
+        reject(new Error('Failed to save file'));
+      });
+      
+      uploadStream.on('finish', () => {
+        resolve(filename);
+      });
+      
+      uploadStream.end(buffer);
+    });
   } catch (error) {
     console.error('Error saving file:', error);
     throw new Error('Failed to save file');
@@ -72,32 +101,67 @@ const saveFile = async (fileData, projectId, branchId, commitHash, extension = '
 };
 
 /**
- * Read file from storage
- * @param {String} filePath - File path
+ * Read file from GridFS
+ * @param {String} filePath - File path (GridFS filename)
  * @returns {Buffer} File data
  */
 const readFile = async (filePath) => {
   try {
-    return await fs.readFile(filePath);
+    const bucket = getBucket();
+    
+    return new Promise((resolve, reject) => {
+      const chunks = [];
+      const downloadStream = bucket.openDownloadStreamByName(filePath);
+      
+      downloadStream.on('data', (chunk) => {
+        chunks.push(chunk);
+      });
+      
+      downloadStream.on('error', (error) => {
+        if (error.code === 'ENOENT' || error.message.includes('FileNotFound')) {
+          reject(new Error('File not found'));
+        } else {
+          console.error('Error reading file from GridFS:', error);
+          reject(new Error('Failed to read file'));
+        }
+      });
+      
+      downloadStream.on('end', () => {
+        resolve(Buffer.concat(chunks));
+      });
+    });
   } catch (error) {
-    if (error.code === 'ENOENT') {
-      throw new Error('File not found');
+    if (error.message === 'File not found') {
+      throw error;
     }
-    throw error;
+    console.error('Error reading file:', error);
+    throw new Error('Failed to read file');
   }
 };
 
 /**
- * Delete file from storage
- * @param {String} filePath - File path
+ * Delete file from GridFS
+ * @param {String} filePath - File path (GridFS filename)
  */
 const deleteFile = async (filePath) => {
   try {
-    await fs.unlink(filePath);
-  } catch (error) {
-    if (error.code !== 'ENOENT') {
-      throw error;
+    const bucket = getBucket();
+    
+    // Find file by filename
+    const files = await bucket.find({ filename: filePath }).toArray();
+    
+    if (files.length === 0) {
+      // File doesn't exist, that's okay
+      return;
     }
+    
+    // Delete all versions of the file (should be just one, but be safe)
+    for (const file of files) {
+      await bucket.delete(file._id);
+    }
+  } catch (error) {
+    console.error('Error deleting file from GridFS:', error);
+    throw new Error('Failed to delete file');
   }
 };
 
@@ -106,24 +170,11 @@ const deleteFile = async (filePath) => {
  * @param {Buffer|String} fileData - File data
  * @param {String} projectId - Project ID
  * @param {String} branchId - Branch ID
- * @returns {String} File path
+ * @returns {String} File path (GridFS filename)
  */
 const saveCurrentSnapshot = async (fileData, projectId, branchId) => {
   try {
-    const dirPath = path.join(
-      config.storage.path,
-      'projects',
-      projectId,
-      'branches',
-      branchId.toString()
-    );
-
-    await ensureDirectory(dirPath);
-
-    const filePath = path.join(dirPath, 'current.json');
-    await fs.writeFile(filePath, fileData);
-
-    return filePath;
+    return await saveFile(fileData, projectId, branchId, null, 'json');
   } catch (error) {
     console.error('Error saving current snapshot:', error);
     throw new Error('Failed to save current snapshot');
@@ -138,18 +189,13 @@ const saveCurrentSnapshot = async (fileData, projectId, branchId) => {
  */
 const getCurrentSnapshot = async (projectId, branchId) => {
   try {
-    const filePath = path.join(
-      config.storage.path,
-      'projects',
-      projectId,
-      'branches',
-      branchId.toString(),
-      'current.json'
-    );
-
+    const filePath = generateFilePath(projectId, branchId);
     return await readFile(filePath);
   } catch (error) {
-    throw new Error('Current snapshot not found');
+    if (error.message === 'File not found') {
+      throw new Error('Current snapshot not found');
+    }
+    throw error;
   }
 };
 
@@ -189,16 +235,7 @@ const copyCurrentSnapshot = async (projectId, sourceBranchId, targetBranchId) =>
  */
 const getCommitSnapshot = async (projectId, branchId, commitHash) => {
   try {
-    const filePath = path.join(
-      config.storage.path,
-      'projects',
-      projectId,
-      'branches',
-      branchId.toString(),
-      'commits',
-      `${commitHash}.json`
-    );
-
+    const filePath = generateFilePath(projectId, branchId, commitHash, 'json');
     return await readFile(filePath);
   } catch (error) {
     if (error.message === 'File not found') {
@@ -215,60 +252,25 @@ const getCommitSnapshot = async (projectId, branchId, commitHash) => {
  */
 const deleteBranchDirectory = async (projectId, branchId) => {
   try {
-    const branchDirPath = path.join(
-      config.storage.path,
-      'projects',
-      projectId,
-      'branches',
-      branchId.toString()
-    );
-
-    // Use fs.rm with recursive option (Node.js 14.14.0+)
-    // Fallback to fs.rmdir for older versions
-    try {
-      await fs.rm(branchDirPath, { recursive: true, force: true });
-    } catch (error) {
-      // Fallback for older Node.js versions
-      if (error.code === 'ENOENT') {
-        // Directory doesn't exist, that's okay
-        return;
-      }
-      // Try with rmdir if rm doesn't exist
-      try {
-        await fs.rmdir(branchDirPath, { recursive: true });
-      } catch (rmdirError) {
-        if (rmdirError.code !== 'ENOENT') {
-          throw rmdirError;
-        }
-      }
+    const bucket = getBucket();
+    
+    // Find all files matching the branch path pattern
+    const prefix = `projects/${projectId}/branches/${branchId}/`;
+    const files = await bucket.find({ 
+      filename: { $regex: `^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}` } 
+    }).toArray();
+    
+    // Delete all files for this branch
+    for (const file of files) {
+      await bucket.delete(file._id);
     }
-
-    console.log(`Deleted branch directory: ${branchDirPath}`);
+    
+    console.log(`Deleted ${files.length} file(s) for branch ${branchId}`);
   } catch (error) {
     console.error('Error deleting branch directory:', error);
     throw new Error('Failed to delete branch directory');
   }
 };
-
-/**
- * TODO: Implement S3 upload
- * Example implementation:
- * 
- * const AWS = require('aws-sdk');
- * const s3 = new AWS.S3();
- * 
- * const uploadToS3 = async (fileData, key) => {
- *   const params = {
- *     Bucket: process.env.S3_BUCKET_NAME,
- *     Key: key,
- *     Body: fileData,
- *     ContentType: 'application/json',
- *   };
- *   
- *   const result = await s3.upload(params).promise();
- *   return result.Location; // S3 URL
- * };
- */
 
 module.exports = {
   saveFile,
