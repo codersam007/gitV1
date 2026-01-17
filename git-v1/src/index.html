@@ -3,25 +3,62 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Design Branch Manager - Version control for Adobe Express designs" />
-    <meta name="keywords" content="Adobe, Express, Add-On, Design, Version Control, Branch Manager" />
-    <title>Design Branch Manager</title>
+    <meta name="description" content="Stream - Collaborative version control for Adobe Express designs" />
+    <meta name="keywords" content="Adobe, Express, Add-On, Design, Version Control, Stream, Collaboration" />
+    <title>Stream</title>
     <style>
         /* ============================================
-           CSS VARIABLES - Design System Colors
+           CSS VARIABLES - Modern Minimalist Design
            ============================================ */
         :root {
-            --color-primary: #1473E6;
-            --color-primary-hover: #0D66D0;
-            --color-success: #107C10;
-            --color-warning: #FF8C00;
-            --color-danger: #E81123;
-            --color-bg: #F5F5F5;
+            /* Primary Colors - Clean & Modern */
+            --color-primary: #0066CC;
+            --color-primary-hover: #0052A3;
+            --color-primary-light: rgba(0, 102, 204, 0.08);
+            
+            /* Status Colors - Subtle */
+            --color-success: #0B7A4B;
+            --color-success-light: rgba(11, 122, 75, 0.08);
+            --color-warning: #D97706;
+            --color-warning-light: rgba(217, 119, 6, 0.08);
+            --color-danger: #DC2626;
+            --color-danger-light: rgba(220, 38, 38, 0.08);
+            
+            /* Neutral Colors - Minimalist */
+            --color-bg: #FAFAFA;
             --color-surface: #FFFFFF;
-            --color-text: #202122;
-            --color-text-secondary: #6F6F6F;
-            --color-border: #D0D0D0;
-            --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            --color-surface-hover: #F5F5F5;
+            --color-text: #1A1A1A;
+            --color-text-secondary: #737373;
+            --color-text-tertiary: #A3A3A3;
+            --color-border: #E5E5E5;
+            --color-border-light: #F0F0F0;
+            
+            /* Typography */
+            --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, 'Helvetica Neue', sans-serif;
+            --font-size-xs: 11px;
+            --font-size-sm: 12px;
+            --font-size-base: 13px;
+            --font-size-md: 14px;
+            --font-size-lg: 16px;
+            
+            /* Spacing - Minimalist Scale */
+            --spacing-xs: 4px;
+            --spacing-sm: 8px;
+            --spacing-md: 12px;
+            --spacing-lg: 16px;
+            --spacing-xl: 20px;
+            --spacing-2xl: 24px;
+            
+            /* Shadows - Subtle & Modern */
+            --shadow-sm: 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-md: 0 2px 8px rgba(0,0,0,0.08);
+            --shadow-lg: 0 4px 16px rgba(0,0,0,0.12);
+            
+            /* Border Radius */
+            --radius-sm: 6px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
         }
 
         /* ============================================
@@ -39,6 +76,8 @@
             font-family: var(--font-family);
             background: var(--color-bg);
             color: var(--color-text);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }
 
         body {
@@ -48,178 +87,288 @@
         }
 
         /* ============================================
-           HEADER COMPONENT
+           RESIZE HANDLING - Adobe Express Panel
+           ============================================ */
+        @media (max-width: 400px) {
+            .tabs {
+                flex-wrap: wrap;
+            }
+            .tab {
+                font-size: 11px;
+                padding: 10px 8px;
+            }
+            .content {
+                padding: var(--spacing-lg);
+            }
+            
+            /* Smaller padding on small screens */
+            .branch-item {
+                padding: var(--spacing-md);
+            }
+        }
+
+        /* ============================================
+           HEADER COMPONENT - Minimalist & Clean
            ============================================ */
         .header {
             background: var(--color-surface);
-            border-bottom: 1px solid var(--color-border);
-            padding: 16px 20px;
+            border-bottom: 1px solid var(--color-border-light);
+            padding: 12px 16px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            flex-shrink: 0;
+            box-shadow: var(--shadow-sm);
+            gap: 12px;
         }
 
         .header-title {
             display: flex;
             align-items: center;
-            gap: 8px;
-            font-size: 16px;
+            gap: 10px;
+            font-size: 15px;
             font-weight: 600;
+            color: var(--color-text);
+            letter-spacing: -0.01em;
+            flex-shrink: 0;
         }
 
         .logo {
             width: 24px;
             height: 24px;
-            background: var(--color-primary);
-            border-radius: 4px;
+            background-image: url('assets/logo.png');
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+            flex-shrink: 0;
+        }
+
+        .header-controls {
             display: flex;
             align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 12px;
-            font-weight: bold;
+            gap: 0;
+        }
+
+        .header-controls .btn-secondary {
+            border-radius: 4px 0 0 4px;
+            border-right: none;
+        }
+
+        .role-badge {
+            font-size: 11px;
+            padding: 6px 10px;
+            border-radius: 0 4px 4px 0;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            white-space: nowrap;
         }
 
         /* ============================================
-           TAB NAVIGATION
+           TAB NAVIGATION - Clean & Minimalist
            ============================================ */
         .tabs {
             display: flex;
             gap: 0;
-            border-bottom: 1px solid var(--color-border);
+            border-bottom: 1px solid var(--color-border-light);
             background: var(--color-surface);
+            flex-shrink: 0;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .tabs::-webkit-scrollbar {
+            display: none;
         }
 
         .tab {
             flex: 1;
-            padding: 12px;
+            min-width: 70px;
+            padding: var(--spacing-lg) var(--spacing-md);
             text-align: center;
             cursor: pointer;
             border: none;
             background: none;
-            font-size: 13px;
+            font-size: var(--font-size-sm);
             font-weight: 500;
             color: var(--color-text-secondary);
-            transition: all 200ms ease;
+            transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
             border-bottom: 2px solid transparent;
             margin-bottom: -1px;
+            position: relative;
+            white-space: nowrap;
         }
 
         .tab.active {
             color: var(--color-primary);
             border-bottom-color: var(--color-primary);
+            font-weight: 600;
         }
 
-        .tab:hover {
-            background: var(--color-bg);
+        .tab:hover:not(.active) {
+            background: var(--color-surface-hover);
+            color: var(--color-text);
         }
 
         /* ============================================
-           CONTENT AREA
+           CONTENT AREA - Responsive & Scrolling
            ============================================ */
         .content {
             flex: 1;
             overflow-y: auto;
-            padding: 20px;
+            overflow-x: hidden;
+            padding: var(--spacing-xl);
+            min-height: 0; /* Important for flex scrolling */
+            -webkit-overflow-scrolling: touch;
+        }
+        
+        .content::-webkit-scrollbar {
+            width: 8px;
+        }
+        
+        .content::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        .content::-webkit-scrollbar-thumb {
+            background: var(--color-border);
+            border-radius: 4px;
+        }
+        
+        .content::-webkit-scrollbar-thumb:hover {
+            background: var(--color-text-tertiary);
         }
 
         .section {
             display: none;
+            animation: fadeIn 0.2s ease-in;
         }
 
         .section.active {
             display: block;
         }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
 
         /* ============================================
-           CARD COMPONENTS
+           CARD COMPONENTS - Minimalist & Clean
            ============================================ */
         .card {
             background: var(--color-surface);
-            border: 1px solid var(--color-border);
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-            transition: all 200ms ease;
+            border: 1px solid var(--color-border-light);
+            border-radius: var(--radius-md);
+            padding: var(--spacing-lg);
+            margin-bottom: var(--spacing-md);
+            transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
         }
 
         .card:hover {
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            border-color: var(--color-border);
+            box-shadow: var(--shadow-md);
         }
 
         .card-header {
             display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
+            flex-direction: column;
+            gap: var(--spacing-sm);
+            margin-bottom: var(--spacing-md);
         }
 
         .card-title {
-            font-size: 14px;
+            font-size: var(--font-size-md);
             font-weight: 600;
             margin: 0;
+            color: var(--color-text);
+            letter-spacing: -0.01em;
+            word-break: break-word;
+        }
+        
+        .card-meta {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: var(--spacing-sm);
         }
 
         /* ============================================
-           BADGE COMPONENTS
+           BADGE COMPONENTS - Subtle & Modern
            ============================================ */
         .badge {
-            display: inline-block;
-            padding: 4px 8px;
-            border-radius: 4px;
-            font-size: 11px;
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: var(--font-size-xs);
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.3px;
+            line-height: 1.2;
         }
 
         .badge-success {
-            background: rgba(16, 124, 16, 0.15);
+            background: var(--color-success-light);
             color: var(--color-success);
         }
 
         .badge-warning {
-            background: rgba(255, 140, 0, 0.15);
+            background: var(--color-warning-light);
             color: var(--color-warning);
         }
 
         .badge-danger {
-            background: rgba(232, 17, 35, 0.15);
+            background: var(--color-danger-light);
             color: var(--color-danger);
         }
 
         .badge-info {
-            background: rgba(20, 115, 230, 0.15);
+            background: var(--color-primary-light);
             color: var(--color-primary);
         }
 
         /* ============================================
-           FORM ELEMENTS
+           FORM ELEMENTS - Clean & Modern
            ============================================ */
         .input-group {
-            margin-bottom: 16px;
+            margin-bottom: var(--spacing-lg);
         }
 
         .label {
             display: block;
-            font-size: 12px;
+            font-size: var(--font-size-xs);
             font-weight: 600;
-            margin-bottom: 6px;
-            text-transform: uppercase;
-            color: var(--color-text-secondary);
+            margin-bottom: var(--spacing-sm);
+            color: var(--color-text);
+            letter-spacing: 0.02em;
         }
 
         input[type="text"],
         textarea,
         select {
             width: 100%;
-            padding: 8px 12px;
+            padding: 10px 14px;
             border: 1px solid var(--color-border);
-            border-radius: 4px;
+            border-radius: var(--radius-sm);
             font-family: var(--font-family);
-            font-size: 13px;
-            transition: border-color 200ms ease;
+            font-size: var(--font-size-base);
+            background: var(--color-surface);
+            color: var(--color-text);
+            transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        input[type="text"]:hover,
+        textarea:hover,
+        select:hover {
+            border-color: var(--color-text-tertiary);
         }
 
         input[type="text"]:focus,
@@ -227,103 +376,151 @@
         select:focus {
             outline: none;
             border-color: var(--color-primary);
-            box-shadow: 0 0 0 3px rgba(20, 115, 230, 0.1);
+            box-shadow: 0 0 0 3px var(--color-primary-light);
+        }
+
+        input[type="text"]:disabled {
+            background: var(--color-bg);
+            color: var(--color-text-tertiary);
+            cursor: not-allowed;
         }
 
         textarea {
             resize: vertical;
             min-height: 80px;
+            font-family: var(--font-family);
         }
 
         /* ============================================
-           BUTTON COMPONENTS
+           BUTTON COMPONENTS - Modern & Minimalist
            ============================================ */
         .btn {
-            padding: 8px 16px;
+            padding: 10px 18px;
             border: none;
-            border-radius: 4px;
-            font-size: 13px;
+            border-radius: var(--radius-sm);
+            font-size: var(--font-size-sm);
             font-weight: 600;
             cursor: pointer;
-            transition: all 200ms ease;
+            transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
             display: inline-flex;
             align-items: center;
-            gap: 6px;
+            justify-content: center;
+            gap: var(--spacing-sm);
+            white-space: nowrap;
+            letter-spacing: -0.01em;
         }
 
         .btn-primary {
             background: var(--color-primary);
             color: white;
+            box-shadow: var(--shadow-sm);
         }
 
         .btn-primary:hover {
             background: var(--color-primary-hover);
+            box-shadow: var(--shadow-md);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary:active {
+            transform: translateY(0);
+            box-shadow: var(--shadow-sm);
         }
 
         .btn-secondary {
-            background: var(--color-bg);
+            background: var(--color-surface);
             color: var(--color-text);
             border: 1px solid var(--color-border);
         }
 
         .btn-secondary:hover {
-            background: #EEEEEE;
+            background: var(--color-surface-hover);
+            border-color: var(--color-text-tertiary);
         }
 
         .btn-sm {
-            padding: 4px 12px;
-            font-size: 12px;
+            padding: 6px 12px;
+            font-size: var(--font-size-xs);
         }
 
         .btn-group {
             display: flex;
-            gap: 8px;
-            margin-top: 12px;
+            gap: var(--spacing-sm);
+            margin-top: var(--spacing-md);
+            flex-wrap: wrap;
+        }
+        
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none !important;
         }
 
         /* ============================================
-           BRANCH LIST COMPONENTS
+           BRANCH LIST COMPONENTS - Clean & Modern
            ============================================ */
         .branch-list {
-            display: grid;
-            gap: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-md);
         }
 
         .branch-item {
-            padding: 12px;
+            padding: var(--spacing-lg);
             background: var(--color-surface);
-            border: 1px solid var(--color-border);
-            border-radius: 6px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            border: 1px solid var(--color-border-light);
+            border-radius: var(--radius-md);
             cursor: pointer;
-            transition: all 200ms ease;
+            transition: all 150ms cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-md);
+            width: 100%;
         }
 
         .branch-item:hover {
-            border-color: var(--color-primary);
-            background: rgba(20, 115, 230, 0.02);
+            border-color: var(--color-border);
+            background: var(--color-surface-hover);
+            box-shadow: var(--shadow-sm);
         }
 
         .branch-info {
-            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: var(--spacing-xs);
+            width: 100%;
         }
 
         .branch-name {
-            font-size: 13px;
+            font-size: var(--font-size-base);
             font-weight: 600;
-            margin-bottom: 4px;
+            color: var(--color-text);
+            letter-spacing: -0.01em;
+            word-break: break-word;
         }
 
         .branch-meta {
-            font-size: 12px;
+            font-size: var(--font-size-xs);
             color: var(--color-text-secondary);
+            display: flex;
+            align-items: center;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+        }
+        
+        .branch-creator {
+            font-size: var(--font-size-xs);
+            color: var(--color-text-secondary);
+            margin-top: var(--spacing-xs);
         }
 
-        .branch-actions {
+        .branch-actions-row {
             display: flex;
-            gap: 6px;
+            gap: var(--spacing-sm);
+            flex-wrap: wrap;
+            align-items: center;
+            padding-top: var(--spacing-sm);
+            border-top: 1px solid var(--color-border-light);
         }
 
         /* ============================================
@@ -358,36 +555,39 @@
         }
 
         /* ============================================
-           UTILITY COMPONENTS
+           UTILITY COMPONENTS - Minimalist
            ============================================ */
         .empty-state {
             text-align: center;
-            padding: 40px 20px;
+            padding: var(--spacing-2xl) var(--spacing-xl);
             color: var(--color-text-secondary);
         }
 
         .empty-state-icon {
             font-size: 32px;
-            margin-bottom: 12px;
+            margin-bottom: var(--spacing-md);
+            opacity: 0.6;
         }
 
         .success-message {
-            background: rgba(16, 124, 16, 0.1);
-            border: 1px solid rgba(16, 124, 16, 0.3);
+            background: var(--color-success-light);
+            border: 1px solid rgba(11, 122, 75, 0.2);
             color: var(--color-success);
-            padding: 12px;
-            border-radius: 4px;
-            margin-bottom: 16px;
-            font-size: 12px;
+            padding: var(--spacing-md);
+            border-radius: var(--radius-sm);
+            margin-bottom: var(--spacing-lg);
+            font-size: var(--font-size-sm);
             display: none;
+            font-weight: 500;
         }
 
         .success-message.show {
             display: block;
+            animation: fadeIn 0.3s ease;
         }
 
         /* ============================================
-           MODAL COMPONENTS
+           MODAL COMPONENTS - Modern & Clean
            ============================================ */
         .modal {
             display: none;
@@ -396,10 +596,13 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0,0,0,0.5);
+            background: rgba(0,0,0,0.4);
+            backdrop-filter: blur(4px);
             z-index: 1000;
             align-items: center;
             justify-content: center;
+            animation: fadeIn 0.2s ease;
+            padding: var(--spacing-xl);
         }
 
         .modal.active {
@@ -408,26 +611,51 @@
 
         .modal-content {
             background: var(--color-surface);
-            border-radius: 8px;
-            padding: 24px;
-            max-width: 500px;
-            width: 90%;
-            max-height: 80vh;
+            border-radius: var(--radius-lg);
+            padding: var(--spacing-2xl);
+            max-width: 480px;
+            width: 100%;
+            max-height: 90vh;
             overflow-y: auto;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            box-shadow: var(--shadow-lg);
+            animation: slideUp 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+            border: 1px solid var(--color-border-light);
+        }
+        
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .modal-content::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        .modal-content::-webkit-scrollbar-thumb {
+            background: var(--color-border);
+            border-radius: 3px;
         }
 
         .modal-title {
-            font-size: 16px;
+            font-size: var(--font-size-lg);
             font-weight: 600;
-            margin-bottom: 16px;
+            margin-bottom: var(--spacing-xl);
+            color: var(--color-text);
+            letter-spacing: -0.02em;
         }
 
         .modal-footer {
             display: flex;
-            gap: 8px;
-            margin-top: 20px;
+            gap: var(--spacing-sm);
+            margin-top: var(--spacing-xl);
             justify-content: flex-end;
+            flex-wrap: wrap;
         }
 
         /* ============================================
@@ -456,29 +684,50 @@
         }
 
         .stat-grid {
-            display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            display: flex;
             gap: 12px;
             margin-bottom: 16px;
         }
 
         .stat-card {
             background: var(--color-bg);
-            padding: 12px;
+            padding: 10px 14px;
             border-radius: 6px;
             border: 1px solid var(--color-border);
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
 
         .stat-value {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 700;
             color: var(--color-primary);
+            letter-spacing: -0.02em;
         }
 
         .stat-label {
-            font-size: 11px;
+            font-size: var(--font-size-xs);
             color: var(--color-text-secondary);
-            margin-top: 4px;
+        }
+        
+        /* ============================================
+           SECTION HEADERS - Clean Typography
+           ============================================ */
+        h2 {
+            font-size: var(--font-size-lg);
+            font-weight: 600;
+            margin: 0;
+            color: var(--color-text);
+            letter-spacing: -0.02em;
+        }
+        
+        h3 {
+            font-size: var(--font-size-md);
+            font-weight: 600;
+            margin: 0;
+            color: var(--color-text);
+            letter-spacing: -0.01em;
         }
     </style>
 </head>
@@ -488,20 +737,23 @@
          ============================================ -->
     <div class="header">
         <div class="header-title">
-            <div class="logo">🌿</div>
-            <span>Design Branch Manager</span>
+            <div class="logo"></div>
+            <span>Stream</span>
         </div>
-        <div id="userSwitcher" style="position: relative;">
-            <button id="userSwitcherBtn" class="btn btn-secondary" style="font-size: 11px; padding: 4px 12px;">
-                <span id="currentUserBadge">👑 Manager</span> ▼
-            </button>
-            <div id="userSwitcherDropdown" style="display: none; position: absolute; top: 100%; right: 0; margin-top: 8px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); min-width: 200px; z-index: 1000; padding: 8px;">
-                <div style="padding: 8px 12px; font-size: 11px; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; border-bottom: 1px solid var(--color-border); margin-bottom: 4px;">Switch User</div>
-                <div id="userList" style="max-height: 300px; overflow-y: auto;">
-                    <!-- Users will be populated here -->
-                </div>
-                <div style="border-top: 1px solid var(--color-border); margin-top: 4px; padding-top: 4px;">
-                    <button id="addDesignerBtn" class="btn btn-primary" style="width: 100%; font-size: 11px; padding: 6px 12px; margin-top: 4px;">+ Add Designer</button>
+        <div class="header-controls">
+            <div id="userSwitcher" style="position: relative; display: flex; align-items: center;">
+                <button id="userSwitcherBtn" class="btn btn-secondary" style="font-size: 11px; padding: 6px 10px; gap: 6px; border-radius: 4px 0 0 4px; border-right: none; height: 28px;">
+                    <span id="currentUserBadge" style="font-weight: 600;"></span>
+                    <span style="font-size: 9px; opacity: 0.6;">▼</span>
+                </button>
+                <div id="userSwitcherDropdown" style="display: none; position: absolute; top: calc(100% + 8px); right: 0; background: var(--color-surface); border: 1px solid var(--color-border-light); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); min-width: 220px; z-index: 1000; padding: var(--spacing-sm); animation: fadeIn 0.15s ease;">
+                    <div style="padding: var(--spacing-sm) var(--spacing-md); font-size: var(--font-size-xs); font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--color-border-light); margin-bottom: var(--spacing-xs);">Switch User</div>
+                    <div id="userList" style="max-height: 300px; overflow-y: auto; padding: var(--spacing-xs) 0;">
+                        <!-- Users will be populated here -->
+                    </div>
+                    <div style="border-top: 1px solid var(--color-border-light); margin-top: var(--spacing-xs); padding-top: var(--spacing-xs);">
+                        <button id="addDesignerBtn" class="btn btn-primary" style="width: 100%; font-size: var(--font-size-xs); padding: 8px 14px; margin-top: var(--spacing-xs);">+ Add Designer</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -511,9 +763,9 @@
          TAB NAVIGATION
          ============================================ -->
     <div class="tabs">
-        <button class="tab active" data-tab="branches">Branches</button>
-        <button class="tab" data-tab="history">History</button>
-        <button class="tab" data-tab="merge">Merge</button>
+        <button class="tab active" data-tab="branches">Canvas</button>
+        <button class="tab" data-tab="history">Snapshots</button>
+        <button class="tab" data-tab="merge">Review</button>
         <button class="tab" data-tab="team">Team</button>
         <button class="tab" data-tab="settings">Settings</button>
     </div>
@@ -526,17 +778,17 @@
              BRANCHES TAB - Main branch management
              ============================================ -->
         <div class="section active" id="branches">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2 style="font-size: 16px; font-weight: 600;">Branches</h2>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-xl); gap: var(--spacing-md); flex-wrap: wrap;">
+                <h2>Canvas</h2>
                 <button class="btn btn-primary" onclick="openCreateBranchModal()">
-                    + New Branch
+                    + New Canvas
                 </button>
             </div>
 
-            <!-- Success message for branch creation -->
-            <div id="branchSuccess" class="success-message">✓ Branch created successfully</div>
+            <!-- Success message for canvas creation -->
+            <div id="branchSuccess" class="success-message">✓ Canvas created successfully</div>
 
-            <!-- Branch list container - populated dynamically -->
+            <!-- Canvas list container - populated dynamically -->
             <div id="branchList" class="branch-list">
                 <div class="empty-state">Loading branches...</div>
             </div>
@@ -546,11 +798,8 @@
              HISTORY TAB - Version history timeline
              ============================================ -->
         <div class="section" id="history">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2 style="font-size: 16px; font-weight: 600;">Version History</h2>
-                <button class="btn btn-primary" onclick="createCommit()">
-                    + New Commit
-                </button>
+            <div style="margin-bottom: var(--spacing-xl);">
+                <h2>Snapshots</h2>
             </div>
 
             <!-- History items - will be populated from API -->
@@ -560,15 +809,15 @@
         </div>
 
         <!-- ============================================
-             MERGE TAB - Merge requests management
+             REVIEW TAB - Review requests management
              ============================================ -->
         <div class="section" id="merge">
-            <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">Merge Requests</h2>
+            <h2 style="margin-bottom: var(--spacing-xl);">Review Requests</h2>
 
             <!-- Filter buttons for merge requests -->
             <div id="mergeFilters" style="display: flex; gap: 8px; margin-bottom: 16px;">
                 <button class="btn btn-primary merge-filter-btn" data-filter="open" onclick="filterMerge('open')">Open</button>
-                <button class="btn btn-secondary merge-filter-btn" data-filter="merged" onclick="filterMerge('merged')">Merged</button>
+                <button class="btn btn-secondary merge-filter-btn" data-filter="merged" onclick="filterMerge('merged')">Blended</button>
                 <button class="btn btn-secondary merge-filter-btn" data-filter="closed" onclick="filterMerge('closed')">Closed</button>
                 <button class="btn btn-secondary merge-filter-btn" data-filter="all" onclick="filterMerge('all')">All</button>
             </div>
@@ -583,7 +832,7 @@
              TEAM TAB - Team member management
              ============================================ -->
         <div class="section" id="team">
-            <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">Team Members</h2>
+            <h2 style="margin-bottom: var(--spacing-xl);">Team Members</h2>
 
             <!-- Team statistics -->
             <div class="stat-grid">
@@ -616,14 +865,14 @@
              SETTINGS TAB - Project configuration
              ============================================ -->
         <div class="section" id="settings">
-            <h2 style="font-size: 16px; font-weight: 600; margin-bottom: 20px;">Settings</h2>
+            <h2 style="margin-bottom: var(--spacing-xl);">Settings</h2>
 
-            <!-- Branch protection settings -->
-            <h3 style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">Branch Protection</h3>
+            <!-- Canvas protection settings -->
+            <h3 style="font-size: 13px; font-weight: 600; margin-bottom: 12px;">Canvas Protection</h3>
             <div class="card">
                 <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
                     <input type="checkbox" id="requireApproval" checked>
-                    <span>Require approval before merging to main</span>
+                    <span>Require approval before blending to Studio</span>
                 </label>
             </div>
 
@@ -682,20 +931,19 @@
          ============================================ -->
     <div class="modal" id="createBranchModal">
         <div class="modal-content">
-            <div class="modal-title">Create New Branch</div>
-            
+            <div class="modal-title">Create New Canvas</div>
+
             <div class="input-group">
-                <label class="label">Branch Type</label>
+                <label class="label">Canvas Type</label>
                 <select id="branchType" onchange="updateBranchPrefix()">
-                    <option value="feature">Feature</option>
-                    <option value="hotfix">Hotfix</option>
-                    <option value="design">Design</option>
+                    <option value="iteration">Iteration</option>
+                    <option value="fix">Fix</option>
                     <option value="experiment">Experiment</option>
                 </select>
             </div>
 
             <div class="input-group">
-                <label class="label">Branch Name</label>
+                <label class="label">Canvas Name</label>
                 <input type="text" id="branchName" placeholder="e.g., new-color-palette">
             </div>
 
@@ -705,16 +953,15 @@
             </div>
 
             <div class="input-group">
-                <label class="label">Base Branch</label>
+                <label class="label">Base Canvas</label>
                 <select id="baseBranch">
-                    <option>main</option>
-                    <option>develop</option>
+                    <option>Studio</option>
                 </select>
             </div>
 
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="closeModal('createBranchModal')">Cancel</button>
-                <button class="btn btn-primary" onclick="createBranch()">Create Branch</button>
+                <button class="btn btn-primary" onclick="createBranch()">Create Canvas</button>
             </div>
         </div>
     </div>
@@ -724,34 +971,36 @@
          ============================================ -->
     <div class="modal" id="mergeBranchModal">
         <div class="modal-content">
-            <div class="modal-title">Merge Branch</div>
+            <div class="modal-title">Create Review Request</div>
             
-            <div class="input-group">
-                <label class="label">Source Branch</label>
-                <input type="text" id="sourceBranch" disabled style="background: var(--color-bg);">
+            <!-- Canvas Selection Row -->
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 20px; padding: 16px; background: var(--color-bg); border-radius: 8px;">
+                <div style="flex: 1;">
+                    <label class="label" style="margin-bottom: 6px;">From Canvas</label>
+                    <input type="text" id="sourceBranch" disabled style="background: var(--color-surface); font-weight: 600;">
+                </div>
+                <div style="padding-top: 20px; color: var(--color-text-secondary); font-size: 18px;">→</div>
+                <div style="flex: 1;">
+                    <label class="label" style="margin-bottom: 6px;">Blend Into</label>
+                    <select id="targetBranch" style="font-weight: 600;">
+                    <option>Studio</option>
+                    </select>
+                </div>
             </div>
 
             <div class="input-group">
-                <label class="label">Target Branch</label>
-                <select id="targetBranch">
-                    <option>main</option>
-                    <option>develop</option>
-                </select>
+                <label class="label">Title</label>
+                <input type="text" id="mergeTitle" placeholder="Brief description of changes">
             </div>
 
             <div class="input-group">
-                <label class="label">Merge Request Title</label>
-                <input type="text" id="mergeTitle" placeholder="Describe your changes">
+                <label class="label">Description <span style="font-weight: 400; color: var(--color-text-secondary);">(optional)</span></label>
+                <textarea id="mergeDesc" placeholder="Add more details about your changes..." rows="3"></textarea>
             </div>
 
-            <div class="input-group">
-                <label class="label">Description</label>
-                <textarea id="mergeDesc" placeholder="Why are you making these changes?"></textarea>
-            </div>
-
-            <div class="modal-footer">
+            <div class="modal-footer" style="gap: 12px;">
                 <button class="btn btn-secondary" onclick="closeModal('mergeBranchModal')">Cancel</button>
-                <button class="btn btn-primary" onclick="submitMergeRequest()">Create Merge Request</button>
+                <button class="btn btn-primary" onclick="submitMergeRequest()">Submit for Review</button>
             </div>
         </div>
     </div>

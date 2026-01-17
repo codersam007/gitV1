@@ -79,6 +79,15 @@ const getMergeRequests = async (req, res, next) => {
           );
         }
         
+        // Get merged by user
+        if (mr.mergedBy) {
+          const mergedByUser = await User.findOne({ userId: mr.mergedBy });
+          mrObj.mergedByUser = mergedByUser ? {
+            userId: mergedByUser.userId,
+            name: mergedByUser.name,
+          } : null;
+        }
+        
         return mrObj;
       })
     );
@@ -195,6 +204,21 @@ const createMergeRequest = async (req, res, next) => {
       throw new AppError('VALIDATION_ERROR', 'Source and target branches cannot be the same', 400);
     }
 
+    // Check branch ownership: Only the branch owner can create merge requests
+    const sourceBranchCreatorId = String(sourceBranchDoc.createdBy || '');
+    const currentUserIdString = String(userId || '');
+    const isManager = req.teamMember?.role === 'manager';
+    const isPrimaryBranch = sourceBranchDoc.isPrimary === true || sourceBranchDoc.name === 'main';
+    
+    // Managers can create MRs from any branch, but designers can only create MRs from their own branches
+    // Exception: Primary/main branch can be used by anyone (but typically only managers create MRs from main)
+    if (!isManager && sourceBranchCreatorId !== currentUserIdString && !isPrimaryBranch) {
+      console.log(`[Create Merge Request] Access denied: User "${currentUserIdString}" (role: ${req.teamMember?.role || 'unknown'}) attempted to create MR from branch "${sourceBranchName}" owned by "${sourceBranchCreatorId}"`);
+      throw new AppError('FORBIDDEN', 'Only the branch owner can create merge requests from this branch', 403);
+    }
+    
+    console.log(`[Create Merge Request] ✅ Access granted: User "${currentUserIdString}" creating MR from "${sourceBranchName}" to "${targetBranchName}"`);
+
     // Get next merge request ID
     const lastMergeRequest = await MergeRequest.findOne({ projectId })
       .sort({ mergeRequestId: -1 })
@@ -303,7 +327,7 @@ const approveMergeRequest = async (req, res, next) => {
         };
         mergeRequest.reviewers.push(reviewer);
       } else {
-        throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
+      throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
       }
     }
 
@@ -392,7 +416,7 @@ const requestChanges = async (req, res, next) => {
         };
         mergeRequest.reviewers.push(reviewer);
       } else {
-        throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
+      throw new AppError('FORBIDDEN', 'You are not a reviewer for this merge request', 403);
       }
     }
 
